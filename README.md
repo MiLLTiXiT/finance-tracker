@@ -75,7 +75,7 @@ refreshes headers, formulas and formatting.
 | Tab | What it does |
 |-----|--------------|
 | **Transactions** | Ledger with category dropdown, currency formatting and a guarded running-balance formula. |
-| **Dashboard** | All-time totals, **last 12 months** and **last 12 weeks** income/expense/net summaries, and category spend-vs-budget for the current month (overspend highlighted). |
+| **Dashboard** | All-time totals, **last 12 months** and **last 12 weeks** income/expense/net summaries, and category spend-vs-budget for the current month (overspend highlighted). Plus three charts: **cashflow over time**, **category spend pie**, and **goals progress**. |
 | **Recurring** | Monthly recurring bills (name, category, amount, due day, active checkbox) with an annual projection and monthly/annual totals. |
 | **Goals** | Savings/earnings goals (e.g. vacations): target amount & date, saved so far, monthly contribution, with computed remaining, % complete, months left and an on-track flag. |
 | **Categories** | Edit this list to change the dropdown options and per-category monthly budgets used by the Dashboard. |

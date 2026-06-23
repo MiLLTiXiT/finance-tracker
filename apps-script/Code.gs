@@ -58,6 +58,7 @@ function setup() {
   buildRecurring_(ss, cats);
   buildGoals_(ss);
   buildDashboard_(ss, cats);
+  buildCharts_(ss, cats);            // charts read from the Dashboard tables
   cleanupDefaultSheet_(ss);
   ss.setActiveSheet(ss.getSheetByName(SHEETS.DASH));
   SpreadsheetApp.getActive().toast('Finance Tracker is ready.', 'Done', 5);
@@ -334,6 +335,54 @@ function put_(sheet, a1, value, bold) {
   var r = sheet.getRange(a1).setValue(value);
   if (bold) r.setFontWeight('bold');
   return r;
+}
+
+// ---- Dashboard charts --------------------------------------------
+// Idempotent: clears existing embedded charts on the Dashboard before
+// re-inserting, so re-running setup() never stacks duplicates.
+function buildCharts_(ss, cats) {
+  var dash = ss.getSheetByName(SHEETS.DASH);
+  if (!dash) return;
+  dash.getCharts().forEach(function (c) { dash.removeChart(c); });
+
+  var goals = ss.getSheetByName(SHEETS.GOALS);
+  var catCount = Math.max(cats.length, 1);
+  var catLast = 26 + catCount;       // category-spend table: rows 27..26+cats
+
+  // 1. Cashflow over time — monthly summary table (Month | Income | Expense | Net).
+  var cashflow = dash.newChart()
+    .setChartType(Charts.ChartType.COLUMN)
+    .addRange(dash.getRange('A10:D22'))
+    .setPosition(40, 1, 0, 0)
+    .setOption('title', 'Cashflow Over Time (Monthly)')
+    .setOption('legend', { position: 'bottom' })
+    .setNumHeaders(1)
+    .build();
+  dash.insertChart(cashflow);
+
+  // 2. Category spend pie — this month's spend by category (Category + Spent).
+  var pie = dash.newChart()
+    .setChartType(Charts.ChartType.PIE)
+    .addRange(dash.getRange('A26:B' + catLast))   // includes header row 26
+    .setPosition(40, 6, 0, 0)
+    .setOption('title', 'Category Spend — This Month')
+    .setNumHeaders(1)
+    .build();
+  dash.insertChart(pie);
+
+  // 3. Goals progress — % complete per goal (from the Goals tab).
+  if (goals) {
+    var progress = dash.newChart()
+      .setChartType(Charts.ChartType.BAR)
+      .addRange(goals.getRange('A1:A100'))   // goal names (header in A1)
+      .addRange(goals.getRange('G1:G100'))   // % complete (header in G1)
+      .setPosition(58, 1, 0, 0)
+      .setOption('title', 'Goals Progress (% Complete)')
+      .setNumHeaders(1)
+      .setOption('hAxis', { format: 'percent' })
+      .build();
+    dash.insertChart(progress);
+  }
 }
 
 // Remove the auto-created "Sheet1" if it's empty and unused.
