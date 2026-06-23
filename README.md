@@ -13,6 +13,11 @@ A personal finance tracker for Google Sheets. It comes in two forms:
 Use the CSV for an instant ledger, then run the Apps Script when you want the
 full dashboards and extra tabs.
 
+> **Live Sheet:** a ready-to-use copy has been created in Google Drive —
+> [**Finance Tracker 2026**](https://docs.google.com/spreadsheets/d/1mQNsuWwPa6qXxPC8RyrkTNt5nX_E1BTq42tPbQhi7PU/edit)
+> (owner: jamilwaliyy@gmail.com). Open it to start immediately, or follow the
+> import steps below to make your own.
+
 ---
 
 ## Option A — Use the CSV template (fastest)
