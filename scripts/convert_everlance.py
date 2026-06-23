@@ -61,14 +61,44 @@ def map_category(everlance_cat, is_income):
 
 # --- Transfer detection ------------------------------------------------
 # Internal account transfers only (own-account shuffles). Deliberately does
-# NOT match gig payouts like "AMAZON FLEX PAYOUT ... VISA MONEY TRANSFER".
+# NOT match gig payouts like "AMAZON FLEX PAYOUT ... VISA MONEY TRANSFER",
+# nor rideshare income (e.g. Empower ACH CREDIT), nor Zelle/Cash App
+# payments to OTHER people.
 MASKED_XFER = re.compile(r'(TO|FROM)\s+\*+\s*\d{3,}', re.I)
+
+# Account holder's name tokens — ALL must be present for a self-match.
+# (Catches "Jamil Aliyy", "JAMIL ABDAL ALIYY", "Jamil Wajih Abdal Aliy".)
+SELF_NAME_TOKENS = ['JAMIL', 'ALIY']
+
+# P2P channels that, combined with the holder's own name, indicate a
+# self-transfer (money moved between the holder's own accounts/apps).
+SELF_CHANNELS = ['ZELLE', 'PERSON-TO-PERSON', 'CASH APP', 'RTP']
+
+# The holder's other linked banks. Movements to/from these via instant-payment
+# rails are self-transfers — but exclude same-named merchants (e.g. a purchase
+# at "Capital One Arena", which is a venue, not the bank).
+OWN_BANKS = ['CAPITAL ONE']
+OWN_BANK_RAILS = ['RTP', 'PERSON-TO-PERSON', 'INTERNET PAYMENT', 'ACCTVERIFY', 'TRANSFER']
+OWN_BANK_EXCLUDE = ['ARENA']
+
+def _has_self_name(t):
+    return all(tok in t for tok in SELF_NAME_TOKENS)
+
 def is_transfer(text):
     t = text.upper()
+    # Internal account shuffles (masked account numbers / online transfers).
     if MASKED_XFER.search(t):
         return True
     if 'ONLINE TRANSFER' in t or 'DEPOSIT TRANSFER' in t:
         return True
+    # Self P2P: holder's own name moving money via Zelle / Cash App / RTP.
+    if _has_self_name(t) and any(ch in t for ch in SELF_CHANNELS):
+        return True
+    # Truist <-> own other bank (e.g. Capital One) instant-payment movements,
+    # excluding same-named merchants/venues.
+    if any(b in t for b in OWN_BANKS) and not any(x in t for x in OWN_BANK_EXCLUDE):
+        if any(r in t for r in OWN_BANK_RAILS):
+            return True
     return False
 
 def money(s):
