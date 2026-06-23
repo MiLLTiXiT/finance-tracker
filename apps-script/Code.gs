@@ -1,0 +1,346 @@
+/**
+ * Finance Tracker — Google Apps Script builder
+ * ------------------------------------------------------------------
+ * Paste this into a Google Sheet (Extensions ▸ Apps Script), then run
+ * `setup()` once. It (re)builds all tabs idempotently:
+ *
+ *   1. Transactions      — ledger with running balance + dropdowns
+ *   2. Dashboard         — weekly AND monthly summaries + category spend
+ *   3. Recurring         — monthly recurring expenses + annual projection
+ *   4. Goals             — savings/earnings planning (vacations, etc.)
+ *   5. Categories        — config feeding dropdowns & budgets
+ *
+ * Re-running setup() preserves any data already typed into the tabs
+ * (it only rewrites headers, formulas, formatting and validation).
+ */
+
+// ---- Config -------------------------------------------------------
+var SHEETS = {
+  TX: 'Transactions',
+  DASH: 'Dashboard',
+  RECUR: 'Recurring',
+  GOALS: 'Goals',
+  CATS: 'Categories'
+};
+
+var DEFAULT_CATEGORIES = [
+  'Income', 'Housing', 'Groceries', 'Utilities', 'Dining',
+  'Transport', 'Health', 'Entertainment', 'Savings', 'Other'
+];
+
+var CURRENCY = '"$"#,##0.00';
+var TX_LAST_ROW = 1000; // formula range depth for the ledger
+
+// ---- Menu ---------------------------------------------------------
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Finance')
+    .addItem('Rebuild tracker (setup)', 'setup')
+    .addSeparator()
+    .addItem('About', 'about_')
+    .addToUi();
+}
+
+function about_() {
+  SpreadsheetApp.getUi().alert(
+    'Finance Tracker',
+    'Run "Rebuild tracker (setup)" to (re)create all tabs.\n' +
+    'Your typed-in data is preserved; only headers, formulas and ' +
+    'formatting are refreshed.',
+    SpreadsheetApp.getUi().ButtonSet.OK);
+}
+
+// ---- Entry point --------------------------------------------------
+function setup() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var cats = buildCategories_(ss);   // build first; others reference it
+  buildTransactions_(ss, cats);
+  buildRecurring_(ss, cats);
+  buildGoals_(ss);
+  buildDashboard_(ss, cats);
+  cleanupDefaultSheet_(ss);
+  ss.setActiveSheet(ss.getSheetByName(SHEETS.DASH));
+  SpreadsheetApp.getActive().toast('Finance Tracker is ready.', 'Done', 5);
+}
+
+// ---- Helpers ------------------------------------------------------
+function getOrCreate_(ss, name) {
+  return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+
+function header_(sheet, headers) {
+  sheet.getRange(1, 1, 1, headers.length)
+    .setValues([headers])
+    .setFontWeight('bold')
+    .setBackground('#1f3864')
+    .setFontColor('#ffffff');
+  sheet.setFrozenRows(1);
+}
+
+// ---- 1. Categories (config) --------------------------------------
+function buildCategories_(ss) {
+  var sheet = getOrCreate_(ss, SHEETS.CATS);
+  header_(sheet, ['Category', 'Monthly Budget']);
+
+  // Seed defaults only when the tab is empty (preserve user edits).
+  if (sheet.getRange(2, 1).getValue() === '') {
+    var seed = DEFAULT_CATEGORIES.map(function (c) {
+      return [c, c === 'Income' ? '' : 0];
+    });
+    sheet.getRange(2, 1, seed.length, 2).setValues(seed);
+  }
+  sheet.getRange('B2:B').setNumberFormat(CURRENCY);
+  sheet.setColumnWidth(1, 160);
+  sheet.setColumnWidth(2, 140);
+
+  // Return the current list of category names for dropdowns/budgets.
+  var values = sheet.getRange('A2:A').getValues()
+    .map(function (r) { return r[0]; })
+    .filter(String);
+  return values;
+}
+
+// ---- 2. Transactions ---------------------------------------------
+function buildTransactions_(ss, cats) {
+  var sheet = getOrCreate_(ss, SHEETS.TX);
+  header_(sheet, ['Date', 'Category', 'Description', 'Income', 'Expense', 'Balance']);
+
+  // Running balance for every data row: =prevBalance + Income - Expense.
+  // Guarded so empty rows stay blank.
+  var formulas = [];
+  for (var r = 2; r <= TX_LAST_ROW; r++) {
+    var prev = (r === 2) ? '0' : 'F' + (r - 1);
+    formulas.push(['=IF(AND(D' + r + '="",E' + r + '=""),"",' +
+      prev + '+N(D' + r + ')-N(E' + r + '))']);
+  }
+  sheet.getRange(2, 6, formulas.length, 1).setFormulas(formulas);
+
+  // Formatting
+  sheet.getRange('A2:A').setNumberFormat('yyyy-mm-dd');
+  sheet.getRange('D2:F').setNumberFormat(CURRENCY);
+  sheet.setColumnWidth(3, 240);
+
+  // Category dropdown (validation) from the Categories tab.
+  applyCategoryValidation_(sheet, 'B2:B', cats);
+
+  // Seed a couple of example rows when empty.
+  if (sheet.getRange(2, 1).getValue() === '') {
+    sheet.getRange(2, 1, 2, 5).setValues([
+      [new Date(), 'Income', 'Salary', 3200, 0],
+      [new Date(), 'Housing', 'Rent', 0, 1200]
+    ]);
+  }
+}
+
+function applyCategoryValidation_(sheet, a1, cats) {
+  if (!cats.length) return;
+  var rule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(cats, true)
+    .setAllowInvalid(true)
+    .build();
+  sheet.getRange(a1).setDataValidation(rule);
+}
+
+// ---- 3. Recurring expenses ---------------------------------------
+function buildRecurring_(ss, cats) {
+  var sheet = getOrCreate_(ss, SHEETS.RECUR);
+  header_(sheet, ['Name', 'Category', 'Amount', 'Due Day', 'Active', 'Annual']);
+
+  // Annual projection: Amount * 12 when Active = TRUE.
+  var formulas = [];
+  for (var r = 2; r <= 200; r++) {
+    formulas.push(['=IF(A' + r + '="","",IF(E' + r + '=TRUE,C' + r + '*12,0))']);
+  }
+  sheet.getRange(2, 6, formulas.length, 1).setFormulas(formulas);
+
+  sheet.getRange('C2:C').setNumberFormat(CURRENCY);
+  sheet.getRange('F2:F').setNumberFormat(CURRENCY);
+  applyCategoryValidation_(sheet, 'B2:B', cats);
+
+  // Active = checkbox
+  sheet.getRange('E2:E').insertCheckboxes();
+
+  // Totals row label + values just below a small block.
+  sheet.getRange('H1').setValue('Monthly recurring total').setFontWeight('bold');
+  sheet.getRange('I1').setFormula('=SUMIF(E2:E,TRUE,C2:C)').setNumberFormat(CURRENCY);
+  sheet.getRange('H2').setValue('Annual recurring total').setFontWeight('bold');
+  sheet.getRange('I2').setFormula('=SUM(F2:F)').setNumberFormat(CURRENCY);
+
+  if (sheet.getRange(2, 1).getValue() === '') {
+    sheet.getRange(2, 1, 3, 5).setValues([
+      ['Rent', 'Housing', 1200, 1, true],
+      ['Electricity', 'Utilities', 60, 9, true],
+      ['Streaming', 'Entertainment', 15, 15, true]
+    ]);
+  }
+  sheet.setColumnWidth(1, 180);
+  sheet.setColumnWidth(8, 190);
+}
+
+// ---- 4. Goals (savings / earnings planning) ----------------------
+function buildGoals_(ss) {
+  var sheet = getOrCreate_(ss, SHEETS.GOALS);
+  header_(sheet, [
+    'Goal', 'Target Amount', 'Target Date', 'Saved So Far',
+    'Monthly Contribution', 'Remaining', '% Complete',
+    'Months Left', 'On Track?'
+  ]);
+
+  for (var r = 2; r <= 100; r++) {
+    // Remaining = Target - Saved
+    var rem = '=IF(B' + r + '="","",MAX(0,B' + r + '-D' + r + '))';
+    // % complete = Saved / Target
+    var pct = '=IF(B' + r + '="","",IF(B' + r + '=0,0,MIN(1,D' + r + '/B' + r + ')))';
+    // Months left until target date (from today)
+    var months = '=IF(C' + r + '="","",DATEDIF(TODAY(),C' + r + ',"M"))';
+    // On track? remaining can be covered by monthlyContribution * monthsLeft
+    var onTrack = '=IF(OR(B' + r + '="",C' + r + '="",E' + r +
+      '=""),"",IF(E' + r + '*H' + r + '>=F' + r + ',"Yes","No"))';
+    sheet.getRange(r, 6).setFormula(rem);
+    sheet.getRange(r, 7).setFormula(pct);
+    sheet.getRange(r, 8).setFormula(months);
+    sheet.getRange(r, 9).setFormula(onTrack);
+  }
+
+  sheet.getRange('B2:B').setNumberFormat(CURRENCY);
+  sheet.getRange('C2:C').setNumberFormat('yyyy-mm-dd');
+  sheet.getRange('D2:F').setNumberFormat(CURRENCY);
+  sheet.getRange('G2:G').setNumberFormat('0%');
+
+  // Highlight off-track goals.
+  var rules = sheet.getConditionalFormatRules();
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('No')
+    .setBackground('#f4cccc')
+    .setRanges([sheet.getRange('I2:I')])
+    .build());
+  rules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('Yes')
+    .setBackground('#d9ead3')
+    .setRanges([sheet.getRange('I2:I')])
+    .build());
+  sheet.setConditionalFormatRules(rules);
+
+  if (sheet.getRange(2, 1).getValue() === '') {
+    var inSixMonths = new Date();
+    inSixMonths.setMonth(inSixMonths.getMonth() + 6);
+    sheet.getRange(2, 1, 1, 5).setValues([
+      ['Vacation', 3000, inSixMonths, 600, 400]
+    ]);
+  }
+  sheet.setColumnWidth(1, 160);
+}
+
+// ---- 5. Dashboard (weekly + monthly summaries) -------------------
+function buildDashboard_(ss, cats) {
+  var sheet = getOrCreate_(ss, SHEETS.DASH);
+  sheet.clear();
+  var tx = "'" + SHEETS.TX + "'";
+
+  sheet.getRange('A1').setValue('Finance Dashboard')
+    .setFontSize(16).setFontWeight('bold');
+
+  // --- Totals block ---
+  put_(sheet, 'A3', 'All-time Income', true);
+  sheet.getRange('B3').setFormula('=SUM(' + tx + '!D2:D)').setNumberFormat(CURRENCY);
+  put_(sheet, 'A4', 'All-time Expense', true);
+  sheet.getRange('B4').setFormula('=SUM(' + tx + '!E2:E)').setNumberFormat(CURRENCY);
+  put_(sheet, 'A5', 'Net', true);
+  sheet.getRange('B5').setFormula('=B3-B4').setNumberFormat(CURRENCY);
+  put_(sheet, 'A6', 'Monthly recurring', true);
+  sheet.getRange('B6')
+    .setFormula("=SUMIF('" + SHEETS.RECUR + "'!E2:E,TRUE,'" + SHEETS.RECUR + "'!C2:C)")
+    .setNumberFormat(CURRENCY);
+
+  // --- Monthly summary (last 12 months) ---
+  put_(sheet, 'A9', 'Monthly Summary', true);
+  sheet.getRange('A10:D10')
+    .setValues([['Month', 'Income', 'Expense', 'Net']])
+    .setFontWeight('bold').setBackground('#d9e1f2');
+  for (var m = 0; m < 12; m++) {
+    var row = 11 + m;
+    // Month start = first day of (this month - (11-m)) so oldest is on top.
+    var monthStart = '=EOMONTH(TODAY(),-' + (12 - m) + ')+1';
+    sheet.getRange(row, 1).setFormula(monthStart).setNumberFormat('mmm yyyy');
+    var ms = 'A' + row;                // month start cell
+    var me = 'EOMONTH(A' + row + ',0)';// month end
+    sheet.getRange(row, 2).setFormula(
+      '=SUMIFS(' + tx + '!D2:D,' + tx + '!A2:A,">="&' + ms + ',' + tx + '!A2:A,"<="&' + me + ')'
+    ).setNumberFormat(CURRENCY);
+    sheet.getRange(row, 3).setFormula(
+      '=SUMIFS(' + tx + '!E2:E,' + tx + '!A2:A,">="&' + ms + ',' + tx + '!A2:A,"<="&' + me + ')'
+    ).setNumberFormat(CURRENCY);
+    sheet.getRange(row, 4).setFormula('=B' + row + '-C' + row).setNumberFormat(CURRENCY);
+  }
+
+  // --- Weekly summary (last 12 weeks) ---
+  put_(sheet, 'F9', 'Weekly Summary', true);
+  sheet.getRange('F10:I10')
+    .setValues([['Week Of', 'Income', 'Expense', 'Net']])
+    .setFontWeight('bold').setBackground('#d9e1f2');
+  for (var w = 0; w < 12; w++) {
+    var wrow = 11 + w;
+    // Week start (Monday) for (this week - (11-w)). Oldest on top.
+    var weekStart = '=TODAY()-WEEKDAY(TODAY(),3)-' + (7 * (11 - w));
+    sheet.getRange(wrow, 6).setFormula(weekStart).setNumberFormat('yyyy-mm-dd');
+    var ws = 'F' + wrow;
+    var we = 'F' + wrow + '+6';
+    sheet.getRange(wrow, 7).setFormula(
+      '=SUMIFS(' + tx + '!D2:D,' + tx + '!A2:A,">="&' + ws + ',' + tx + '!A2:A,"<="&' + we + ')'
+    ).setNumberFormat(CURRENCY);
+    sheet.getRange(wrow, 8).setFormula(
+      '=SUMIFS(' + tx + '!E2:E,' + tx + '!A2:A,">="&' + ws + ',' + tx + '!A2:A,"<="&' + we + ')'
+    ).setNumberFormat(CURRENCY);
+    sheet.getRange(wrow, 9).setFormula('=G' + wrow + '-H' + wrow).setNumberFormat(CURRENCY);
+  }
+
+  // --- Category spend vs budget (this month) ---
+  put_(sheet, 'A25', 'Category Spend — This Month', true);
+  sheet.getRange('A26:D26')
+    .setValues([['Category', 'Spent', 'Budget', 'Remaining']])
+    .setFontWeight('bold').setBackground('#d9e1f2');
+  var catsTab = "'" + SHEETS.CATS + "'";
+  for (var i = 0; i < cats.length; i++) {
+    var crow = 27 + i;
+    var monthStart = '=EOMONTH(TODAY(),-1)+1';
+    sheet.getRange(crow, 1).setValue(cats[i]);
+    // Spent this month for this category
+    sheet.getRange(crow, 2).setFormula(
+      '=SUMIFS(' + tx + '!E2:E,' + tx + '!B2:B,A' + crow +
+      ',' + tx + '!A2:A,">="&EOMONTH(TODAY(),-1)+1,' + tx + '!A2:A,"<="&EOMONTH(TODAY(),0))'
+    ).setNumberFormat(CURRENCY);
+    // Budget from Categories tab
+    sheet.getRange(crow, 3).setFormula(
+      '=IFERROR(VLOOKUP(A' + crow + ',' + catsTab + '!A:B,2,FALSE),0)'
+    ).setNumberFormat(CURRENCY);
+    sheet.getRange(crow, 4).setFormula('=C' + crow + '-B' + crow).setNumberFormat(CURRENCY);
+  }
+
+  // Highlight overspent categories (Remaining < 0).
+  var dRules = sheet.getConditionalFormatRules();
+  dRules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenNumberLessThan(0)
+    .setBackground('#f4cccc')
+    .setRanges([sheet.getRange('D27:D' + (26 + cats.length))])
+    .build());
+  sheet.setConditionalFormatRules(dRules);
+
+  sheet.setColumnWidth(1, 160);
+  sheet.setColumnWidth(6, 120);
+  sheet.setFrozenRows(1);
+}
+
+function put_(sheet, a1, value, bold) {
+  var r = sheet.getRange(a1).setValue(value);
+  if (bold) r.setFontWeight('bold');
+  return r;
+}
+
+// Remove the auto-created "Sheet1" if it's empty and unused.
+function cleanupDefaultSheet_(ss) {
+  var def = ss.getSheetByName('Sheet1');
+  if (def && ss.getSheets().length > 1 &&
+      def.getLastRow() === 0 && def.getLastColumn() === 0) {
+    ss.deleteSheet(def);
+  }
+}

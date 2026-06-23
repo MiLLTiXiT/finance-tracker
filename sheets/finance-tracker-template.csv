@@ -1,0 +1,12 @@
+Personal Finance Tracker 2026
+""
+Date,Category,Description,Income,Expense,Balance,,Summary,
+2026-01-01,Opening Balance,Starting balance,1000,0,=D4-E4,,Total Income,=SUM(D4:D100)
+2026-01-03,Income,Salary - January,3200,0,=F4+D5-E5,,Total Expense,=SUM(E4:E100)
+2026-01-05,Housing,Rent,0,1200,=F5+D6-E6,,Net,=I4-I5
+2026-01-06,Groceries,Weekly groceries,0,85,=F6+D7-E7,,,
+2026-01-09,Utilities,Electricity bill,0,60,=F7+D8-E8,,By Category,
+2026-01-12,Dining,Dinner out,0,45,=F8+D9-E9,,Housing,"=SUMIF(B4:B100,""Housing"",E4:E100)"
+2026-01-15,Transport,Fuel,0,55,=F9+D10-E10,,Groceries,"=SUMIF(B4:B100,""Groceries"",E4:E100)"
+2026-01-20,Groceries,Weekly groceries,0,92,=F10+D11-E11,,Dining,"=SUMIF(B4:B100,""Dining"",E4:E100)"
+2026-01-25,Savings,Transfer to vacation,0,300,=F11+D12-E12,,Transport,"=SUMIF(B4:B100,""Transport"",E4:E100)"
