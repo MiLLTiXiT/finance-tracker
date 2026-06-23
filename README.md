@@ -94,12 +94,31 @@ finance-tracker/
 ├── README.md
 ├── sheets/
 │   └── finance-tracker-template.csv   # importable single-tab ledger
+├── scripts/
+│   └── convert_everlance.py           # Everlance export -> Transactions CSV
 └── apps-script/
     └── Code.gs                        # builds the full multi-tab tracker
 ```
+
+## Importing an Everlance export
+
+`scripts/convert_everlance.py` converts an [Everlance](https://everlance.com)
+CSV export into the tracker's `Date | Category | Description | Income | Expense`
+layout. It splits the signed `Amount` into Income/Expense, **drops internal
+account-to-account transfers** (own-account shuffles that would otherwise
+inflate both totals), and maps Everlance's ~70 categories down to the
+tracker's 10.
+
+```bash
+python3 scripts/convert_everlance.py everlance_export.csv transactions.csv
+```
+
+Then import `transactions.csv` into the **Transactions** tab via
+**File ▸ Import ▸ Upload ▸ Append to current sheet**, and fill the Balance
+formula (column F) down over the new rows.
 
 ## Roadmap (ideas for v2)
 
 - Charts on the Dashboard (cashflow over time, category pie).
 - Multi-currency support.
-- Bank CSV import/normalisation into the Transactions tab.
+- More bank/export formats for the import script.
