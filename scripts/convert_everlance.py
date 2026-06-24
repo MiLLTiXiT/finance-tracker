@@ -29,7 +29,7 @@ TEN = {'Income','Housing','Groceries','Utilities','Dining','Transport',
 CATEGORY_MAP = {
     # Income
     'Payroll':'Income','Revenue':'Income','Interest Earned':'Income',
-    'Deposit':'Income','Check':'Income',
+    'Deposit':'Income',
     # Transport
     'Gas Stations':'Transport','Gasoline':'Transport','Tolls and Fees':'Transport',
     'Car Dealers and Leasing':'Transport','Car and Truck Rentals':'Transport',
@@ -75,8 +75,21 @@ MERCHANT_MAP = [
     ('MARYLAND MVA', 'Transport'),
 ]
 
+# Lenders you borrow from (fill in your own, e.g. ['ACME LOANS']). A deposit
+# from one is loan Income; a payment to one is a repayment Expense ('Other') — so
+# repayments aren't mis-filed (Everlance tags them 'Loans and Mortgages' = Housing).
+LENDERS = []
+
 def map_category(everlance_cat, merch, is_income):
     m = merch.upper()
+    # A check/money order YOU write is an expense; a check you DEPOSIT is income.
+    # Everlance tags both 'Check', so direction (not the label) decides.
+    if everlance_cat == 'Check':
+        return 'Income' if is_income else 'Other'
+    # Lender deposits = loan income; lender payments = repayment expense.
+    for kw in LENDERS:
+        if kw and kw in m:
+            return 'Income' if is_income else 'Other'
     for kw, cat in MERCHANT_MAP:
         if kw in m:
             return cat

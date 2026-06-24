@@ -500,7 +500,11 @@ var SETTINGS_ROWS = [
   ['Card pay rails', ['INTERNET PAYMENT', 'E-PAYMENT', 'EPAYMENT', 'ONLINE PAYMENT', 'AUTOPAY', 'BILL PAYMENT'],
     'Rails that indicate a credit-card payment.'],
   ['Own card issuers (name-only)', [],
-    'Cards paid by an issuer-name-only outflow from checking (no rail in the text).']
+    'Cards paid by an issuer-name-only outflow from checking (no rail in the text).'],
+  ['Lenders (loan in / repayment out)', [],
+    'Names of lenders you borrow from (e.g. a cash-advance/loan provider). A ' +
+    'deposit from one is treated as loan Income; a payment to one as an Expense ' +
+    '(category Other) — so repayments are not mis-filed under Housing, etc.']
 ];
 
 // Map each Settings row label -> the cfg field the importer uses.
@@ -513,7 +517,8 @@ var SETTINGS_KEYS = {
   'Own sub-accounts': 'own360',
   'Own cards (rail-paid)': 'ownCards',
   'Card pay rails': 'cardPayRails',
-  'Own card issuers (name-only)': 'ownCardIssuers'
+  'Own card issuers (name-only)': 'ownCardIssuers',
+  'Lenders (loan in / repayment out)': 'lenders'
 };
 
 function buildSettings_(ss) {
@@ -551,7 +556,8 @@ function readSettings_(ss) {
     own360: [],
     ownCards: [],
     cardPayRails: ['INTERNET PAYMENT', 'E-PAYMENT', 'EPAYMENT', 'ONLINE PAYMENT', 'AUTOPAY', 'BILL PAYMENT'],
-    ownCardIssuers: []
+    ownCardIssuers: [],
+    lenders: []
   };
   var sheet = ss.getSheetByName(SHEETS.SETTINGS);
   if (!sheet || sheet.getLastRow() < 2 || sheet.getLastColumn() < 2) return cfg;
@@ -588,7 +594,7 @@ function pickProfile_(values) {
 // ---- Everlance taxonomy (format-specific, not personal) ----------
 var EV_CATEGORY_MAP = {
   'Payroll': 'Income', 'Revenue': 'Income', 'Interest Earned': 'Income',
-  'Deposit': 'Income', 'Check': 'Income',
+  'Deposit': 'Income',
   'Gas Stations': 'Transport', 'Gasoline': 'Transport', 'Tolls and Fees': 'Transport',
   'Car Dealers and Leasing': 'Transport', 'Car and Truck Rentals': 'Transport',
   'Car Wash and Detail': 'Transport', 'Other Vehicle Related Expenses': 'Transport',
@@ -634,8 +640,19 @@ function money_(s) {
   return neg ? -v : v;
 }
 
-function mapCategory_(ecat, merch, isIncome) {
+function mapCategory_(ecat, merch, isIncome, cfg) {
   var m = String(merch).toUpperCase();
+  // A check/money order YOU write is an expense; a check you DEPOSIT is income.
+  // Everlance tags both 'Check', so direction (not the label) decides.
+  if (ecat === 'Check') return isIncome ? 'Income' : 'Other';
+  // Lenders (configured on the Settings tab): a deposit is a loan (income) and a
+  // payment is a repayment (expense) — so neither is mis-bucketed (e.g. the
+  // 'Loans and Mortgages' tag would otherwise push repayments into Housing).
+  if (cfg && cfg.lenders) {
+    for (var k = 0; k < cfg.lenders.length; k++) {
+      if (cfg.lenders[k] && m.indexOf(cfg.lenders[k]) !== -1) return isIncome ? 'Income' : 'Other';
+    }
+  }
   for (var i = 0; i < EV_MERCHANT_MAP.length; i++) {
     if (m.indexOf(EV_MERCHANT_MAP[i][0]) !== -1) return EV_MERCHANT_MAP[i][1];
   }
@@ -707,7 +724,7 @@ function parseEverlance_(values, cfg) {
     if (isTransfer_(merch + ' ' + bd, cfg) || isCardPayment_(ac, amt, merch, bd, ecat, cfg)) {
       cat = 'Transfer'; stats.transfers++;
     } else {
-      cat = mapCategory_(ecat, merch, amt > 0);
+      cat = mapCategory_(ecat, merch, amt > 0, cfg);
       if (amt > 0) stats.income = round2_(stats.income + round2_(amt));
       else stats.expense = round2_(stats.expense + round2_(-amt));
     }

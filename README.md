@@ -154,7 +154,11 @@ rewrite (Everlance is profile #1).
   description + account, ignoring tag/category columns);
 - maps Everlance's ~70 categories down to the tracker's 10, classifying
   vaguely-labelled bank rows (e.g. "Debit") by **merchant keyword** so the
-  GasBuddy fuel app lands in Transport instead of the catch-all "Other".
+  GasBuddy fuel app lands in Transport instead of the catch-all "Other";
+- **reads checks by direction** — a check/money order you *write* is an Expense,
+  a check you *deposit* is Income (Everlance tags both "Check", so the amount's
+  sign decides), and any **Lender** named on the Settings tab is treated as loan
+  Income on the way in and a repayment Expense on the way out.
 
 ### Importing again — daily, weekly, whenever
 
@@ -182,6 +186,7 @@ put.
 > | **Own sub-accounts** | your savings/checking sub-accounts |
 > | **Own cards (rail-paid)** + **Card pay rails** | cards you pay via a labelled payment rail |
 > | **Own card issuers (name-only)** | cards paid by an issuer-name-only outflow from checking |
+> | **Lenders (loan in / repayment out)** | lenders you borrow from — deposits count as loan Income, payments as Expense |
 >
 > Add a value by typing it in the next empty cell on that row — no code editing.
 
