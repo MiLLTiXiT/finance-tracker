@@ -5,10 +5,18 @@
  * `setup()` once. It (re)builds all tabs idempotently:
  *
  *   1. Transactions      — ledger with running balance + dropdowns
- *   2. Dashboard         — weekly AND monthly summaries + category spend
+ *   2. Accounts          — opening balances -> live per-account balances
  *   3. Recurring         — monthly recurring expenses + annual projection
  *   4. Goals             — savings/earnings planning (vacations, etc.)
- *   5. Categories        — config feeding dropdowns & budgets
+ *   5. Dashboard         — weekly AND monthly summaries + category spend
+ *   6. Categories        — config feeding dropdowns & budgets
+ *   7. Settings          — your name/banks/cards, read by the CSV importer
+ *
+ * The CSV converter is built IN — Finance ▸ Import transactions (CSV) cleans
+ * an Everlance export and merges it entirely inside the sheet (no outside
+ * script). Imports are INCREMENTAL: only transactions not already present are
+ * added (matched on a hidden Ref column), so you can import as often as you
+ * like — daily, even.
  *
  * Re-running setup() preserves any data already typed into the tabs
  * (it only rewrites headers, formulas, formatting and validation).
@@ -110,32 +118,39 @@ function buildCategories_(ss) {
 function buildTransactions_(ss, cats) {
   var sheet = getOrCreate_(ss, SHEETS.TX);
   header_(sheet, ['Date', 'Category', 'Description', 'Income', 'Expense',
-                  'Account', 'Type', 'Balance']);
+                  'Account', 'Type', 'Ref', 'Balance']);
 
-  // Running cumulative net (col H): =prev + Income - Expense. This is a global
+  // Col H = Ref: each imported row's source identity, so the importer can add
+  // ONLY transactions not already present (incremental import). Hidden — it's
+  // bookkeeping, not for reading.
+  //
+  // Col I = Balance: running cumulative net (=prev + Income - Expense), a global
   // line across all accounts; real per-account balances live on the Accounts
-  // tab. Guarded so empty rows stay blank.
+  // tab. Guarded so empty rows stay blank. Recomputed by the importer after each
+  // load once rows are date-sorted.
   var formulas = [];
   for (var r = 2; r <= TX_LAST_ROW; r++) {
-    var prev = (r === 2) ? '0' : 'H' + (r - 1);
+    var prev = (r === 2) ? '0' : 'I' + (r - 1);
     formulas.push(['=IF(AND(D' + r + '="",E' + r + '=""),"",' +
       prev + '+N(D' + r + ')-N(E' + r + '))']);
   }
-  sheet.getRange(2, 8, formulas.length, 1).setFormulas(formulas);
+  sheet.getRange(2, 9, formulas.length, 1).setFormulas(formulas);
 
   // Formatting
   sheet.getRange('A2:A').setNumberFormat('yyyy-mm-dd');
   sheet.getRange('D2:E').setNumberFormat(CURRENCY);
-  sheet.getRange('H2:H').setNumberFormat(CURRENCY);
+  sheet.getRange('I2:I').setNumberFormat(CURRENCY);
   sheet.setColumnWidth(3, 240);
   sheet.setColumnWidth(6, 175);
+  sheet.hideColumns(8); // Ref — bookkeeping only
 
   // Category dropdown — include "Transfer" so imported transfer rows validate.
   applyCategoryValidation_(sheet, 'B2:B', cats.concat(['Transfer']));
   // Account Type dropdown (Cash / Credit).
   applyListValidation_(sheet, 'G2:G', ['Cash', 'Credit']);
 
-  // Seed a couple of example rows when empty.
+  // Seed a couple of example rows when empty. They carry no Ref, so the first
+  // import clears them (the tab is managed by the importer).
   if (sheet.getRange(2, 1).getValue() === '') {
     sheet.getRange(2, 1, 2, 7).setValues([
       [new Date(), 'Income', 'Salary', 3200, 0, 'Checking 3620', 'Cash'],
@@ -471,8 +486,10 @@ function buildCharts_(ss, cats) {
 // trims on read. The seeds below are institution/keyword lists — they
 // are NOT your name. Fill "Name tokens" yourself (kept out of code).
 var SETTINGS_ROWS = [
-  ['Name tokens (ALL must match)', [],
-    'Your name parts (e.g. first + last). Used to spot self Zelle/Cash App. Blank = skip name matching.'],
+  ['Name tokens (ALL must match)', ['JAMIL', 'ALIY'],
+    'Distinctive parts of YOUR name — ALL must appear for a row to count as ' +
+    'money moved between your own accounts (self Zelle/Cash App). Use stems: ' +
+    'ALIY matches both Aliy and Aliyy. Add ABDAL if your bank shows it. Blank = skip name matching.'],
   ['Self P2P channels', ['ZELLE', 'PERSON-TO-PERSON', 'CASH APP', 'RTP'],
     'Instant-payment rails that, with your name, mean a self-transfer.'],
   ['Own banks', ['CAPITAL ONE'],
@@ -531,7 +548,7 @@ function buildSettings_(ss) {
 // to DEFAULT_CFG. Name tokens default to [] so your name is never in code.
 function readSettings_(ss) {
   var cfg = {
-    nameTokens: [],
+    nameTokens: ['JAMIL', 'ALIY'],
     selfChannels: ['ZELLE', 'PERSON-TO-PERSON', 'CASH APP', 'RTP'],
     ownBanks: ['CAPITAL ONE'],
     ownBankRails: ['RTP', 'PERSON-TO-PERSON', 'INTERNET PAYMENT', 'ACCTVERIFY', 'TRANSFER'],
@@ -701,7 +718,9 @@ function parseEverlance_(values, cfg) {
     }
     var inc = amt > 0 ? round2_(amt) : '';
     var exp = amt < 0 ? round2_(-amt) : '';
-    out.push([date, cat, merch, inc, exp, acct, atype]);
+    // 8th field = Ref (the dedupe key) so the importer can match against rows
+    // already in the sheet and add only what's new.
+    out.push([date, cat, merch, inc, exp, acct, atype, key]);
     stats.kept++;
   }
   out.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
@@ -709,24 +728,93 @@ function parseEverlance_(values, cfg) {
 }
 
 // ---- Write cleaned rows into the Transactions tab ----------------
-// Full-history model: replaces the A:G data region (col H balance
-// formulas, laid to TX_LAST_ROW by buildTransactions_, are left alone).
+// INCREMENTAL model: merge the freshly-parsed rows with whatever is already in
+// the ledger, matching on the hidden Ref column so each transaction is added
+// only once. Rows the importer manages all carry a Ref; the example seed rows
+// (no Ref) are dropped on the first import. The merged set is re-sorted by date
+// and the running Balance (col I) is recomputed. Returns {added, skipped, total}.
 function writeTransactions_(ss, rows) {
   var tx = ss.getSheetByName(SHEETS.TX);
   if (!tx) throw new Error('Transactions tab not found — run "Rebuild tracker" first.');
 
-  var lastRow = tx.getLastRow();
-  if (lastRow >= 2) tx.getRange(2, 1, lastRow - 1, 7).clearContent();
-  if (!rows.length) return;
+  // Read the whole potential data region (cols A..H). Reading cols 1-8 avoids
+  // the col-I balance formulas, so getLastRow's formula-extent is irrelevant.
+  var maxRows = tx.getMaxRows();
+  var region = (maxRows >= 2) ? tx.getRange(2, 1, maxRows - 1, 8).getValues() : [];
 
-  var values = rows.map(function (r) {
+  var keep = [];     // [Date, cat, desc, inc, exp, acct, type, ref]
+  var seenRef = {};
+  for (var i = 0; i < region.length; i++) {
+    var ref = region[i][7];
+    if (ref !== '' && ref !== null) {       // only import-managed rows survive
+      keep.push(region[i].slice(0, 8));
+      seenRef[ref] = true;
+    }
+  }
+
+  // Add only transactions whose Ref isn't already present.
+  var added = 0;
+  for (var k = 0; k < rows.length; k++) {
+    var r = rows[k];
+    var rk = r[7];
+    if (seenRef[rk]) continue;
+    seenRef[rk] = true;
     var p = String(r[0]).split('-');
     var d = (p.length === 3) ? new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])) : r[0];
-    return [d, r[1], r[2], r[3], r[4], r[5], r[6]];
+    keep.push([d, r[1], r[2], r[3], r[4], r[5], r[6], rk]);
+    added++;
+  }
+
+  // Date-sort the merged ledger (oldest first).
+  keep.sort(function (a, b) {
+    var x = (a[0] instanceof Date) ? a[0].getTime() : 0;
+    var y = (b[0] instanceof Date) ? b[0].getTime() : 0;
+    return x - y;
   });
-  tx.getRange(2, 1, values.length, 7).setValues(values);
-  tx.getRange(2, 1, values.length, 1).setNumberFormat('yyyy-mm-dd');
-  tx.getRange(2, 4, values.length, 2).setNumberFormat(CURRENCY);
+
+  // Rewrite the data region and recompute the running balance.
+  tx.getRange(2, 1, maxRows - 1, 9).clearContent();
+  if (keep.length) {
+    tx.getRange(2, 1, keep.length, 8).setValues(keep);
+    var formulas = [];
+    for (var f = 0; f < keep.length; f++) {
+      var row = f + 2;
+      var prev = (row === 2) ? '0' : 'I' + (row - 1);
+      formulas.push(['=IF(AND(D' + row + '="",E' + row + '=""),"",' +
+        prev + '+N(D' + row + ')-N(E' + row + '))']);
+    }
+    tx.getRange(2, 9, keep.length, 1).setFormulas(formulas);
+    tx.getRange(2, 1, keep.length, 1).setNumberFormat('yyyy-mm-dd');
+    tx.getRange(2, 4, keep.length, 2).setNumberFormat(CURRENCY);
+    tx.getRange(2, 9, keep.length, 1).setNumberFormat(CURRENCY);
+  }
+  return { added: added, skipped: rows.length - added, total: keep.length };
+}
+
+// Append account labels seen in Transactions but not yet on the Accounts tab,
+// so each new account/card gets a row where you can set its Opening Balance.
+function syncAccountsFromTx_(ss) {
+  var tx = ss.getSheetByName(SHEETS.TX);
+  var acct = ss.getSheetByName(SHEETS.ACCT);
+  if (!tx || !acct) return;
+
+  var aMax = acct.getMaxRows();
+  var aVals = (aMax >= 2) ? acct.getRange(2, 1, aMax - 1, 1).getValues() : [];
+  var have = {}, lastAcct = 1;
+  for (var i = 0; i < aVals.length; i++) {
+    if (aVals[i][0] !== '' && aVals[i][0] !== null) { have[aVals[i][0]] = true; lastAcct = i + 2; }
+  }
+
+  var tMax = tx.getMaxRows();
+  var tVals = (tMax >= 2) ? tx.getRange(2, 6, tMax - 1, 2).getValues() : [];  // F=Account, G=Type
+  var add = [], seen = {};
+  for (var j = 0; j < tVals.length; j++) {
+    var name = tVals[j][0], type = tVals[j][1] || 'Cash';
+    if (name === '' || name === null || have[name] || seen[name]) continue;
+    seen[name] = true;
+    add.push([name, type]);
+  }
+  if (add.length) acct.getRange(lastAcct + 1, 1, add.length, 2).setValues(add);
 }
 
 // ---- Menu handler: file-picker dialog ----------------------------
@@ -745,14 +833,18 @@ function processImportedCsv(text) {
   var cfg = readSettings_(ss);
   var profile = pickProfile_(values);
   var res = profile.parse(values, cfg);
-  writeTransactions_(ss, res.rows);
+  var w = writeTransactions_(ss, res.rows);   // incremental merge
+  syncAccountsFromTx_(ss);                     // surface any new accounts/cards
   var s = res.stats;
-  ss.toast('Imported ' + s.kept + ' rows from ' + profile.name + '.', 'Import complete', 6);
+  ss.toast('Added ' + w.added + ' new (' + w.skipped + ' already present).',
+    'Import complete', 6);
   return profile.name + ' import complete.\n' +
-    'Kept ' + s.kept + ' transactions (' + s.transfers + ' transfers), ' +
-    'removed ' + s.dupes + ' duplicates.\n' +
-    'Income $' + s.income.toFixed(2) + '   Expense $' + s.expense.toFixed(2) + '.\n' +
-    'Tip: drag the column-H balance formula down if you have more rows than before.';
+    'Added ' + w.added + ' new transaction(s); ' + w.skipped +
+    ' were already in the sheet (skipped).\n' +
+    'This file held ' + s.kept + ' rows (' + s.transfers + ' transfers labelled), ' +
+    s.dupes + ' in-file duplicate(s) removed.\n' +
+    'Ledger now holds ' + w.total + ' transaction(s).\n' +
+    'Tip: set Opening Balances on the Accounts tab for any new accounts.';
 }
 
 var IMPORT_DIALOG_HTML_ =
@@ -763,7 +855,8 @@ var IMPORT_DIALOG_HTML_ =
   '#status{margin-top:14px;white-space:pre-wrap;line-height:1.4}' +
   '</style></head><body>' +
   '<p>Choose your CSV export (Everlance supported today). It is cleaned and ' +
-  'written to the <b>Transactions</b> tab, <b>replacing</b> existing rows.</p>' +
+  'merged into the <b>Transactions</b> tab — only transactions not already ' +
+  'in the sheet are added, so you can import as often as you like.</p>' +
   '<input type="file" id="file" accept=".csv,text/csv"><br><br>' +
   '<button id="btn" onclick="go()">Import</button>' +
   '<div id="status"></div>' +

@@ -63,7 +63,7 @@ amount under **Income** or **Expense** and the balance recalculates. Drag the
 
 ## Option B — Build the full tracker with Apps Script
 
-This creates all five tabs with formatting, dropdowns, checkboxes and the
+This creates all tabs with formatting, dropdowns, checkboxes and the
 weekly/monthly dashboards.
 
 1. Open a Google Sheet (a blank one, or the one you imported the CSV into).
@@ -119,19 +119,20 @@ rewrite (Everlance is profile #1).
 
 1. Run **Finance ▸ Rebuild tracker** so all tabs exist — including the new
    **Settings** tab.
-2. On the **Settings** tab, fill in **Name tokens (ALL must match)** with your
-   name parts (e.g. your first and last name, one per cell). This is the only
-   personal detail the importer needs that isn't pre-filled — it lets it spot
-   *your* self-Zelle / Cash App transfers. The other rows come pre-seeded; edit
-   them when your accounts change (see below).
+2. Open the **Settings** tab and check **Name tokens (ALL must match)** — it's
+   pre-seeded with `JAMIL` and `ALIY` (the `ALIY` stem matches both *Aliy* and
+   *Aliyy*, so your name reads correctly however the bank spells it). These let
+   the importer spot *your* self-Zelle / Cash App transfers. Everything else is
+   pre-seeded too; edit a row only when your accounts change (see below).
 
-**Each import:**
+**Each import (as often as you like — daily is fine):**
 
 3. **Finance ▸ Import transactions (CSV)…** → a pop-up opens.
-4. Choose your Everlance CSV export and click **Import**. The cleaned rows
-   **replace** the Transactions tab and a summary appears (rows kept, transfers,
-   duplicates removed, income/expense). The column **H** running balance
-   recomputes on its own.
+4. Choose your Everlance CSV export and click **Import**. Only transactions not
+   already in the sheet are **added** (matched on a hidden `Ref` column); the
+   summary shows how many were added vs. already present. The ledger re-sorts by
+   date, the running **Balance** recomputes, and any new account/card is
+   auto-added to the **Accounts** tab.
 5. On the **Accounts** tab, fill each **Opening Balance** (what the account held
    before your first transaction; **credit cards negative**). The **Current
    Balance** and the Dashboard's Cash / Credit / Net-worth totals update
@@ -159,14 +160,19 @@ rewrite (Everlance is profile #1).
   vaguely-labelled bank rows (e.g. "Debit") by **merchant keyword** so the
   GasBuddy fuel app lands in Transport instead of the catch-all "Other".
 
-### Re-running each month
+### Importing again — daily, weekly, whenever
 
-1. **Export the full history** from Everlance again — not just the new month. The
-   import **replaces** the whole Transactions tab, so a partial export would wipe
-   earlier rows. (Keep an archive copy if you like.)
-2. **Finance ▸ Import transactions (CSV)…**, choose the new export, **Import**.
-   That's it — the balance, Accounts and Dashboard all recompute. Your opening
-   balances are untouched.
+Because imports are **incremental**, you never have to re-export your whole
+history. Export whatever Everlance has (the latest day, the latest week, or the
+full file — it doesn't matter) and run **Finance ▸ Import transactions (CSV)…**.
+Only transactions the sheet hasn't seen are added; anything already present is
+skipped, so re-importing the same file twice changes nothing. The balance,
+Accounts and Dashboard recompute automatically, and your opening balances stay
+put.
+
+> **Bank-sync note:** Everlance only has a transaction once your bank feeds it
+> (often a day or two later), so "today's" purchase may not appear until a later
+> import regardless of how often you run it.
 
 > **When you add or close an account/card:** the importer recognises your
 > transfers using the lists on the **Settings** tab. Add the new account's
