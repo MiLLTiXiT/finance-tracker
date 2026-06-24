@@ -80,7 +80,7 @@ refreshes headers, formulas and formatting.
 |-----|--------------|
 | **Transactions** | Ledger with category dropdown, **Account** and **Type** (Cash/Credit) columns, currency formatting and a guarded running-cumulative-net formula. Transfers between your own accounts carry the category **`Transfer`** so they move balances without distorting spend totals. |
 | **Accounts** | One row per account (pre-seeded). Enter each **Opening Balance** — what it held before your first imported transaction; **credit cards are negative** (e.g. `-10000`). The **Current Balance** then derives automatically as *Opening + that account's income − expenses* (transfers included). |
-| **Dashboard** | Three standing balances — **Cash on hand**, **Credit (debt)** and **Net worth (all)** — from the Accounts tab; all-time income/expense/net and **last 12 months / 12 weeks** summaries (transfers excluded); category spend-vs-budget for the current month (overspend highlighted). Plus three charts: **cashflow over time**, **category spend pie**, and **goals progress**. |
+| **Dashboard** | Three standing balances — **Cash on hand**, **Credit (debt)** and **Net worth (all)** — from the Accounts tab; all-time income/expense/net and **last 12 months / 12 weeks** summaries (transfers excluded); category spend-vs-budget for the current month (overspend highlighted). Plus three charts: **cashflow over time**, **category spend pie**, and **goals progress**. ⚠️ Until you set Opening Balances (below), the cash figure is labelled **"Net change since import"** — it's the change since your first import, *not* your real cash. |
 | **Recurring** | Monthly recurring bills (name, category, amount, due day, active checkbox) with an annual projection and monthly/annual totals. |
 | **Goals** | Savings/earnings goals (e.g. vacations): target amount & date, saved so far, monthly contribution, with computed remaining, % complete, months left and an on-track flag. |
 | **Categories** | Edit this list to change the dropdown options and per-category monthly budgets used by the Dashboard. |
@@ -148,6 +148,14 @@ rewrite (Everlance is profile #1).
   card lowers cash **and** card debt) but the Dashboard excludes the `Transfer`
   category from income/expense/spend totals, so nothing is double-counted.
   Purchases made **on** a card stay as ordinary expenses;
+- **reconciles internal transfers the text rules miss** — money moved between
+  your own accounts via a generic "DEPOSIT" or a person-name P2P has no transfer
+  keyword, so it would be booked as **Income** where it lands, inflating that
+  account. When an inflow in one account mirrors an outflow in another (same
+  amount, within a few days), the importer pairs them and labels **both** legs
+  `Transfer`. The summary reports how many it paired and flags any leftover
+  transfer in/out **imbalance** — money whose matching leg is missing from the
+  export, which may still be inflating an account's balance;
 - **removes exact-duplicate transactions** — if an account was synced twice, the
   same charge appears 2–3× with an identical bank reference; each real
   transaction is counted once (keyed on amount + date + merchant + bank

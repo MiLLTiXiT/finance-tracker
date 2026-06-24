@@ -16,6 +16,12 @@ layout: Date | Category | Description | Income | Expense | Account | Type.
 - Removes exact-duplicate transactions: when an account is synced twice, the
   same charge appears 2-3x with an identical bank reference. Each real
   transaction is counted once.
+- Reconciles internal transfers the text rules miss: when an inflow in one of
+  your accounts mirrors an outflow in another (same amount, within a few days),
+  both legs are labelled "Transfer" so a move between your own accounts is not
+  counted as income on the receiving side (which would inflate that account's
+  balance). Reports any leftover transfer in/out imbalance — money whose other
+  leg is missing from the export.
 - Maps Everlance's ~70 categories down to the tracker's 10.
 
 Usage:  python3 convert_everlance.py input_everlance.csv output.csv
@@ -204,6 +210,55 @@ def is_card_payment(account, amount, merch, bankdesc, ecat):
         return True
     return False
 
+# --- Internal transfer reconciliation (cross-account leg pairing) ------
+# The text rules above only catch transfer legs that name an account, rail or
+# your own name. Money moved between your OWN accounts via a generic
+# "DEPOSIT"/"MOBILE DEPOSIT" or a person-name P2P slips through: the receiving
+# side is booked as Income and the sending side as Expense, which inflates
+# whichever account the money lands in (your hub account) with phantom "income".
+# Since every account in the export is your own, an Income row mirrored by an
+# Expense row in a DIFFERENT account (same amount, within a few days) is exactly
+# such an internal transfer — tag BOTH legs 'Transfer'. Guards: different account,
+# each row consumed at most once (one-to-one), dates within XFER_PAIR_DAYS.
+XFER_PAIR_DAYS = 3
+
+def _row_date(s):
+    from datetime import date
+    p = str(s).split('-')
+    return date(int(p[0]), int(p[1]), int(p[2])) if len(p) == 3 else None
+
+def pair_internal_transfers(rows):
+    """Pair Income/Expense legs of internal transfers across own accounts.
+    Mutates `rows` ([Date,Category,Desc,Income,Expense,Account,Type]) in place;
+    returns the number of pairs reconciled."""
+    expenses = {}                       # amount -> list of unconsumed outflow indices
+    for i, r in enumerate(rows):
+        if r[1] == 'Transfer' or r[4] in ('', None):
+            continue
+        expenses.setdefault(round(float(r[4]), 2), []).append(i)
+    paired = 0
+    for r in rows:
+        if r[1] == 'Transfer' or r[3] in ('', None):   # income legs only
+            continue
+        bucket = expenses.get(round(float(r[3]), 2))
+        if not bucket:
+            continue
+        in_d = _row_date(r[0])
+        for b, ei in enumerate(bucket):
+            if ei < 0:                                 # outflow leg already consumed
+                continue
+            e = rows[ei]
+            if e[5] == r[5]:                           # must be a DIFFERENT account
+                continue
+            ed = _row_date(e[0])
+            if in_d is None or ed is None or abs((ed - in_d).days) > XFER_PAIR_DAYS:
+                continue
+            r[1] = 'Transfer'; e[1] = 'Transfer'       # both legs become transfers
+            bucket[b] = -1                             # consume the outflow leg
+            paired += 1
+            break                                      # each inflow pairs at most once
+    return paired
+
 def money(s):
     s = s.strip().replace('$','').replace(',','')
     if s in ('','-'): return 0.0
@@ -217,7 +272,7 @@ def convert(raw):
     hi = next(i for i,r in enumerate(rows)
               if r[:4]==['Amount','Date','Merchant','Category'])
     out=[['Date','Category','Description','Income','Expense','Account','Type']]
-    stats={'kept':0,'transfers':0,'dupes':0,'income':0.0,'expense':0.0}
+    dupes=0
     # Drop exact-duplicate transactions first. When an account is synced twice,
     # the same charge appears 2-3x with an identical bank reference; the key is
     # the transaction's financial identity + bank reference (col 8, which carries
@@ -233,7 +288,7 @@ def convert(raw):
         ac=r[9].strip() if len(r)>9 else ''
         key=(round(amt,2), date, merch.upper(), bd.upper(), ac.upper())
         if key in seen:
-            stats['dupes']+=1
+            dupes+=1
             continue
         seen.add(key)
         ecat=r[3].strip() or 'Uncategorized'
@@ -247,15 +302,29 @@ def convert(raw):
             # Kept (not dropped) so account balances move correctly, but flagged
             # so the Dashboard's income/expense/category analytics skip it.
             cat='Transfer'
-            stats['transfers']+=1
         else:
             cat=map_category(ecat, merch, amt>0)
-            if amt>0: stats['income']+=round(amt,2)
-            else:     stats['expense']+=round(-amt,2)
         inc = round(amt,2) if amt>0 else ''
         exp = round(-amt,2) if amt<0 else ''
-        out.append([date,cat,merch,inc,exp,acct,atype]); stats['kept']+=1
+        out.append([date,cat,merch,inc,exp,acct,atype])
+    # Reconcile internal transfers the text rules missed (cross-account pairing)
+    # BEFORE tallying, so phantom hub "income" is reclassified out of the totals.
+    paired = pair_internal_transfers(out[1:])
     out[1:]=sorted(out[1:], key=lambda x:x[0])   # oldest -> newest
+    # Tally after pairing so income/expense exclude every transfer and the
+    # transfer in/out imbalance (unmatched one-sided legs) is reported.
+    stats={'kept':len(out)-1,'transfers':0,'dupes':dupes,'paired':paired,
+           'income':0.0,'expense':0.0,'xfer_in':0.0,'xfer_out':0.0}
+    for row in out[1:]:
+        ii=float(row[3]) if row[3] not in ('',None) else 0.0
+        ee=float(row[4]) if row[4] not in ('',None) else 0.0
+        if row[1]=='Transfer':
+            stats['transfers']+=1
+            stats['xfer_in']=round(stats['xfer_in']+ii,2)
+            stats['xfer_out']=round(stats['xfer_out']+ee,2)
+        else:
+            stats['income']=round(stats['income']+ii,2)
+            stats['expense']=round(stats['expense']+ee,2)
     return out, stats
 
 if __name__=='__main__':
@@ -263,7 +332,14 @@ if __name__=='__main__':
     raw=open(inp,encoding='utf-8',errors='replace').read()
     out,st=convert(raw)
     csv.writer(open(outp,'w',newline='')).writerows(out)
-    print(f"kept {st['kept']} rows ({st['transfers']} transfers), "
+    print(f"kept {st['kept']} rows ({st['transfers']} transfers, "
+          f"{st['paired']} auto-paired across own accounts), "
           f"removed {st['dupes']} duplicates")
     print(f"income ${st['income']:,.2f}  expense ${st['expense']:,.2f}  "
           f"net ${st['income']-st['expense']:,.2f}  (transfers excluded)")
+    imbalance = round(st['xfer_in']-st['xfer_out'], 2)
+    if abs(imbalance) >= 1:
+        print(f"NOTE: transfers in (${st['xfer_in']:,.2f}) and out "
+              f"(${st['xfer_out']:,.2f}) differ by ${imbalance:,.2f} — some "
+              f"internal-transfer legs are missing from this export, so that "
+              f"amount may still be inflating an account's balance.")

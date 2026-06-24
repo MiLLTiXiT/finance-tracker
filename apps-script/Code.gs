@@ -181,6 +181,11 @@ function applyListValidation_(sheet, a1, list) {
 function buildAccounts_(ss) {
   var sheet = getOrCreate_(ss, SHEETS.ACCT);
   header_(sheet, ['Account', 'Type', 'Opening Balance', 'Current Balance']);
+  sheet.getRange('D1').setNote(
+    'Current Balance = Opening Balance + this account’s income − expenses.\n' +
+    'A blank Opening Balance is treated as 0, so the figure then shows only the ' +
+    'net change since your first import, NOT your real balance. Enter each ' +
+    'account’s actual starting balance in column C to see true balances.');
   var tx = "'" + SHEETS.TX + "'";
 
   for (var r = 2; r <= 60; r++) {
@@ -324,7 +329,17 @@ function buildDashboard_(ss, cats) {
   var bal = function (type) {
     return '=SUMIF(' + acct + '!B2:B,"' + type + '",' + acct + '!D2:D)';
   };
-  put_(sheet, 'D3', 'Cash on hand', true);
+  // Label is honest about what the figure means: with no Opening Balances set,
+  // each account's "Current Balance" is just its net change since the first
+  // import — NOT real cash — so don't call it "Cash on hand" until a starting
+  // balance exists. The label flips automatically once any Opening Balance is set.
+  sheet.getRange('D3').setFormula(
+    '=IF(COUNT(' + acct + '!C2:C)=0,"Net change since import ⚠","Cash on hand")'
+  ).setFontWeight('bold');
+  sheet.getRange('D3').setNote(
+    'While every Opening Balance on the Accounts tab is blank, this figure is the ' +
+    'net change since your first import — NOT your real cash. Enter each account’s ' +
+    'starting balance on the Accounts tab to turn this into true Cash on hand.');
   sheet.getRange('E3').setFormula(bal('Cash')).setNumberFormat(CURRENCY);
   put_(sheet, 'D4', 'Credit (debt)', true);
   sheet.getRange('E4').setFormula(bal('Credit')).setNumberFormat(CURRENCY);
@@ -688,6 +703,65 @@ function isCardPayment_(account, amount, merch, bankdesc, ecat, cfg) {
   return false;
 }
 
+// ---- Internal transfer reconciliation (cross-account leg pairing) ----
+// The text rules above (isTransfer_/isCardPayment_) only catch legs that name an
+// account, rail or your own name. Money moved between your OWN accounts via a
+// generic "DEPOSIT"/"MOBILE DEPOSIT" or a person-name P2P slips through: the
+// receiving side is booked as Income and the sending side as Expense. That
+// inflates whichever account the money lands in (your hub account) with phantom
+// "income" it never really earned. Since every account in the export is your own,
+// an Income row in one account that mirrors an Expense row in a DIFFERENT account
+// (same amount, within a few days) is exactly such an internal transfer — so tag
+// BOTH legs 'Transfer' and neither distorts income/expense or per-account cash.
+//
+// Guards against false cancels: the two legs must be on different accounts, each
+// row is consumed at most once (one-to-one), and the dates must fall within
+// XFER_PAIR_DAYS. Two coincidentally-equal cross-account transactions could still
+// pair — rare; the import summary reports how much was paired so it stays
+// auditable. rows: [date, cat, desc, inc, exp, acct, type, ref]; date is a
+// 'YYYY-MM-DD' string (parse stage) or a real Date (merge stage) — both handled.
+var XFER_PAIR_DAYS = 3;
+
+function rowDateMs_(d) {
+  if (d instanceof Date) return d.getTime();
+  var p = String(d).split('-');
+  return (p.length === 3) ? new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])).getTime() : 0;
+}
+
+function pairInternalTransfers_(rows) {
+  var win = XFER_PAIR_DAYS * 86400000;
+  // Bucket the outstanding outflow (Expense) legs by rounded amount.
+  var expenses = {};   // amount -> array of row indices not yet consumed
+  var i, r, amt;
+  for (i = 0; i < rows.length; i++) {
+    r = rows[i];
+    if (r[1] === 'Transfer' || r[4] === '' || r[4] === null) continue;
+    amt = round2_(Number(r[4]));
+    (expenses[amt] = expenses[amt] || []).push(i);
+  }
+  var paired = 0;
+  for (i = 0; i < rows.length; i++) {
+    r = rows[i];
+    if (r[1] === 'Transfer' || r[3] === '' || r[3] === null) continue;  // income legs only
+    amt = round2_(Number(r[3]));
+    var bucket = expenses[amt];
+    if (!bucket) continue;
+    var inMs = rowDateMs_(r[0]);
+    for (var b = 0; b < bucket.length; b++) {
+      var ei = bucket[b];
+      if (ei < 0) continue;                       // outflow leg already consumed
+      var e = rows[ei];
+      if (e[5] === r[5]) continue;                // must be a DIFFERENT account
+      if (Math.abs(rowDateMs_(e[0]) - inMs) > win) continue;
+      r[1] = 'Transfer'; e[1] = 'Transfer';       // both legs become transfers
+      bucket[b] = -1;                             // consume the outflow leg
+      paired++;
+      break;                                      // each inflow pairs at most once
+    }
+  }
+  return paired;
+}
+
 function everlanceHeaderRow_(values) {
   for (var i = 0; i < values.length; i++) {
     var r = values[i];
@@ -703,7 +777,7 @@ function parseEverlance_(values, cfg) {
   var hi = everlanceHeaderRow_(values);
   if (hi === -1) throw new Error('Not an Everlance export (header row not found).');
   var out = [];
-  var stats = { kept: 0, transfers: 0, dupes: 0, income: 0.0, expense: 0.0 };
+  var dupes = 0;
   var seen = {};
   for (var j = hi + 1; j < values.length; j++) {
     var r = values[j];
@@ -715,27 +789,44 @@ function parseEverlance_(values, cfg) {
     var ac = r.length > 9 ? String(r[9]).trim() : '';
     var key = round2_(amt) + '|' + date + '|' + merch.toUpperCase() + '|' +
               bd.toUpperCase() + '|' + ac.toUpperCase();
-    if (seen[key]) { stats.dupes++; continue; }
+    if (seen[key]) { dupes++; continue; }
     seen[key] = true;
     var ecat = String(r[3]).trim() || 'Uncategorized';
     var acct = ac.split(' - ')[0].trim();
     var atype = ac.toUpperCase().indexOf('CARD') !== -1 ? 'Credit' : 'Cash';
     var cat;
     if (isTransfer_(merch + ' ' + bd, cfg) || isCardPayment_(ac, amt, merch, bd, ecat, cfg)) {
-      cat = 'Transfer'; stats.transfers++;
+      cat = 'Transfer';
     } else {
       cat = mapCategory_(ecat, merch, amt > 0, cfg);
-      if (amt > 0) stats.income = round2_(stats.income + round2_(amt));
-      else stats.expense = round2_(stats.expense + round2_(-amt));
     }
     var inc = amt > 0 ? round2_(amt) : '';
     var exp = amt < 0 ? round2_(-amt) : '';
     // 8th field = Ref (the dedupe key) so the importer can match against rows
     // already in the sheet and add only what's new.
     out.push([date, cat, merch, inc, exp, acct, atype, key]);
-    stats.kept++;
   }
+  // Reconcile internal transfers the text rules missed (cross-account leg pairing)
+  // BEFORE tallying, so phantom hub "income" is reclassified out of the totals.
+  var paired = pairInternalTransfers_(out);
   out.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
+  // Tally after pairing so income/expense exclude every transfer (text- or
+  // pair-detected) and the transfer in/out imbalance is reported for auditing.
+  var stats = { kept: out.length, transfers: 0, dupes: dupes, paired: paired,
+                income: 0.0, expense: 0.0, xferIn: 0.0, xferOut: 0.0 };
+  for (var s = 0; s < out.length; s++) {
+    var row = out[s];
+    var ii = (row[3] === '' || row[3] === null) ? 0 : Number(row[3]);
+    var ee = (row[4] === '' || row[4] === null) ? 0 : Number(row[4]);
+    if (row[1] === 'Transfer') {
+      stats.transfers++;
+      stats.xferIn = round2_(stats.xferIn + ii);
+      stats.xferOut = round2_(stats.xferOut + ee);
+    } else {
+      stats.income = round2_(stats.income + ii);
+      stats.expense = round2_(stats.expense + ee);
+    }
+  }
   return { rows: out, stats: stats };
 }
 
@@ -776,6 +867,11 @@ function writeTransactions_(ss, rows) {
     keep.push([d, r[1], r[2], r[3], r[4], r[5], r[6], rk]);
     added++;
   }
+
+  // Reconcile internal transfers across the WHOLE merged ledger (not just this
+  // file), so a transfer whose two legs arrived in separate imports — or rows
+  // imported before this fix — also get paired and corrected on re-import.
+  pairInternalTransfers_(keep);
 
   // Date-sort the merged ledger (oldest first).
   keep.sort(function (a, b) {
@@ -848,15 +944,27 @@ function processImportedCsv(text) {
   var w = writeTransactions_(ss, res.rows);   // incremental merge
   syncAccountsFromTx_(ss);                     // surface any new accounts/cards
   var s = res.stats;
+  var imbalance = round2_(s.xferIn - s.xferOut);
   ss.toast('Added ' + w.added + ' new (' + w.skipped + ' already present).',
     'Import complete', 6);
-  return profile.name + ' import complete.\n' +
+  var msg = profile.name + ' import complete.\n' +
     'Added ' + w.added + ' new transaction(s); ' + w.skipped +
     ' were already in the sheet (skipped).\n' +
-    'This file held ' + s.kept + ' rows (' + s.transfers + ' transfers labelled), ' +
+    'This file held ' + s.kept + ' rows (' + s.transfers + ' transfers labelled, ' +
+    'of which ' + s.paired + ' auto-paired across your own accounts), ' +
     s.dupes + ' in-file duplicate(s) removed.\n' +
-    'Ledger now holds ' + w.total + ' transaction(s).\n' +
-    'Tip: set Opening Balances on the Accounts tab for any new accounts.';
+    'Ledger now holds ' + w.total + ' transaction(s).\n';
+  // Surface unreconciled internal money: when transfers in and out don't net to
+  // ~0, some transfer legs are missing from the export (one-sided), so that money
+  // is still sitting in income/expense and per-account balances. Make it visible.
+  if (Math.abs(imbalance) >= 1) {
+    msg += 'Heads-up: transfers in and out differ by $' + Math.abs(imbalance).toFixed(2) +
+      ' — some internal-transfer legs appear to be missing from this export, so a ' +
+      'matching amount may still be inflating an account’s balance.\n';
+  }
+  msg += 'Tip: set Opening Balances on the Accounts tab — without them, "Cash on ' +
+    'hand" is only your net change since the first import.';
+  return msg;
 }
 
 var IMPORT_DIALOG_HTML_ =
