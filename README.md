@@ -111,8 +111,14 @@ layout. It:
   self-Zelle/Cash App, Capital One 360 savings/checking shuffles, and credit-card
   payments — which would otherwise inflate both totals. Card payments are dropped
   on **both** sides: the money leaving checking *and* the matching "payment
-  received" entry on the card account. The purchases you actually made **on** the
-  card are kept as expenses (so spending is never lost, only double-counting);
+  received" entry on the card account. This includes payments labelled with only
+  the issuer name (e.g. a "Robinhood" debit on checking paying the Robinhood
+  Credit Card — see `OWN_CARD_ISSUERS`). The purchases you actually made **on**
+  the card are kept as expenses (so spending is never lost, only double-counting);
+- **removes exact-duplicate transactions** — if an account was synced twice, the
+  same charge appears 2–3× with an identical bank reference; each real
+  transaction is counted once (keyed on amount + date + merchant + bank
+  description + account, ignoring tag/category columns);
 - maps Everlance's ~70 categories down to the tracker's 10, and additionally
   classifies vaguely-labelled bank rows (e.g. "Debit") by **merchant keyword**
   (`MERCHANT_MAP`), so the GasBuddy fuel app lands in Transport instead of the

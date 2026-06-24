@@ -8,7 +8,12 @@ layout: Date | Category | Description | Income | Expense.
   own accounts), which otherwise inflate both income and expense. This
   includes BOTH legs of a credit-card payment: the money leaving checking
   AND the matching "payment received" entry on the card account. The real
-  expenses are the individual purchases ON the card, which are kept.
+  expenses are the individual purchases ON the card, which are kept. Card
+  payments labelled with only the issuer name (e.g. a "Robinhood" debit on
+  checking that pays the Robinhood Credit Card) are dropped too.
+- Removes exact-duplicate transactions: when an account is synced twice, the
+  same charge appears 2-3x with an identical bank reference. Each real
+  transaction is counted once.
 - Maps Everlance's ~70 categories down to the tracker's 10.
 
 Usage:  python3 convert_everlance.py input_everlance.csv output.csv
@@ -114,6 +119,16 @@ OWN_CARDS = ['DISCOVER']
 CARD_PAY_RAILS = ['INTERNET PAYMENT', 'E-PAYMENT', 'EPAYMENT',
                   'ONLINE PAYMENT', 'AUTOPAY', 'BILL PAYMENT']
 
+# Card issuers the holder pays straight from checking, where the bank labels the
+# outflow with ONLY the issuer name (no payment rail) — e.g. a "Robinhood" debit
+# on the checking account is a Robinhood Credit Card payment, not a brokerage
+# investment. Such a non-card-account outflow is the checking-side leg of a card
+# payment, so it's dropped (the card's purchases are where the real spend lives).
+# NOTE: subject to change — if the holder later also funds a Robinhood brokerage
+# from checking, switch to pair-matching (only drop an outflow with a matching
+# `Payment` leg on the card) instead of dropping every issuer-named outflow.
+OWN_CARD_ISSUERS = ['ROBINHOOD']
+
 def _has_self_name(t):
     return all(tok in t for tok in SELF_NAME_TOKENS)
 
@@ -151,12 +166,20 @@ CARD_PAY_MARKERS = ['THANK YOU', 'INTERNET PAYMENT', 'AUTOPAY']
 CARD_REWARD_MARKERS = ['STATEMENT CREDIT', 'CASHBACK', 'POINTS', 'REDEMPTION', 'REWARD']
 
 def is_card_payment(account, amount, merch, bankdesc, ecat):
-    """The card-side leg of a credit-card payment (money arriving at the card)."""
-    if CARD_ACCT_HINT not in (account or '').upper():
+    """A leg of a credit-card payment — either side, so neither is counted."""
+    acct = (account or '').upper()
+    t = (merch + ' ' + bankdesc).upper()
+    # Checking-side leg: money leaving a NON-card account to a card issuer the
+    # holder pays directly, where the bank labels it with just the issuer name
+    # (e.g. "Robinhood" debiting checking). See OWN_CARD_ISSUERS note above.
+    if CARD_ACCT_HINT not in acct and amount < 0 and \
+       any(iss in t for iss in OWN_CARD_ISSUERS):
+        return True
+    # Card-side leg: money arriving at the card account.
+    if CARD_ACCT_HINT not in acct:
         return False
     if amount <= 0:                # negative = a purchase on the card = real expense
         return False
-    t = (merch + ' ' + bankdesc).upper()
     if any(rw in t for rw in CARD_REWARD_MARKERS):
         return False               # cashback / statement credit / points = keep
     if any(m in t for m in CARD_PAY_MARKERS):
@@ -178,14 +201,27 @@ def convert(raw):
     hi = next(i for i,r in enumerate(rows)
               if r[:4]==['Amount','Date','Merchant','Category'])
     out=[['Date','Category','Description','Income','Expense']]
-    stats={'kept':0,'transfers':0,'income':0.0,'expense':0.0}
+    stats={'kept':0,'transfers':0,'dupes':0,'income':0.0,'expense':0.0}
+    # Drop exact-duplicate transactions first. When an account is synced twice,
+    # the same charge appears 2-3x with an identical bank reference; the key is
+    # the transaction's financial identity + bank reference (col 8, which carries
+    # the unique ACH id for bank-fed rows), ignoring the user's tag/purpose/
+    # category annotation columns so re-synced copies that differ only in tags
+    # still collapse. First occurrence wins.
+    seen=set()
     for r in rows[hi+1:]:
         if len(r)<4 or not r[1].strip():
             continue
         amt=money(r[0]); date=r[1].strip(); merch=r[2].strip()
+        bd=r[8].strip() if len(r)>8 else ''
+        ac=r[9].strip() if len(r)>9 else ''
+        key=(round(amt,2), date, merch.upper(), bd.upper(), ac.upper())
+        if key in seen:
+            stats['dupes']+=1
+            continue
+        seen.add(key)
         ecat=r[3].strip() or 'Uncategorized'
-        bankdesc=r[8].strip() if len(r)>8 else ''
-        account=r[9].strip() if len(r)>9 else ''
+        bankdesc=bd; account=ac
         if is_transfer(merch+' '+bankdesc) or \
            is_card_payment(account, amt, merch, bankdesc, ecat):
             stats['transfers']+=1
@@ -205,6 +241,7 @@ if __name__=='__main__':
     raw=open(inp,encoding='utf-8',errors='replace').read()
     out,st=convert(raw)
     csv.writer(open(outp,'w',newline='')).writerows(out)
-    print(f"kept {st['kept']} rows, removed {st['transfers']} transfers")
+    print(f"kept {st['kept']} rows, removed {st['transfers']} transfers, "
+          f"{st['dupes']} duplicates")
     print(f"income ${st['income']:,.2f}  expense ${st['expense']:,.2f}  "
           f"net ${st['income']-st['expense']:,.2f}")
