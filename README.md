@@ -9,8 +9,10 @@ A personal finance tracker for Google Sheets. It comes in two forms:
    multi-tab tracker**: Transactions, an **Accounts** tab that turns opening
    balances into live per-account balances, a Dashboard with **weekly & monthly**
    summaries plus **Cash / Credit / Net-worth** standing totals, **Recurring**
-   monthly expenses, savings **Goals** (vacations, etc.), and a **Categories**
-   config tab that drives dropdowns and budgets.
+   monthly expenses, savings **Goals** (vacations, etc.), a **Categories** config
+   tab that drives dropdowns and budgets, and a **built-in CSV importer**
+   (Finance ▸ Import transactions) that cleans an Everlance export into the ledger
+   — no external tools required.
 
 Use the CSV for an instant ledger, then run the Apps Script when you want the
 full dashboards and extra tabs.
@@ -87,6 +89,7 @@ refreshes headers, formulas and formatting.
 | **Recurring** | Monthly recurring bills (name, category, amount, due day, active checkbox) with an annual projection and monthly/annual totals. |
 | **Goals** | Savings/earnings goals (e.g. vacations): target amount & date, saved so far, monthly contribution, with computed remaining, % complete, months left and an on-track flag. |
 | **Categories** | Edit this list to change the dropdown options and per-category monthly budgets used by the Dashboard. |
+| **Settings** | Personal lists the CSV importer uses to recognise transfers between your own accounts (name, banks, cards). Edit a row to add an account — no code changes. |
 
 ---
 
@@ -98,99 +101,98 @@ finance-tracker/
 ├── sheets/
 │   └── finance-tracker-template.csv   # importable single-tab ledger
 ├── scripts/
-│   └── convert_everlance.py           # Everlance export -> Transactions CSV
+│   └── convert_everlance.py           # optional CLI converter (in-sheet import preferred)
 └── apps-script/
-    └── Code.gs                        # builds the full multi-tab tracker
+    └── Code.gs                        # builds all tabs + the built-in CSV importer
 ```
 
-## Importing an Everlance export
+## Importing transactions (built into the sheet)
 
-`scripts/convert_everlance.py` converts an [Everlance](https://everlance.com)
-CSV export into the tracker's
-`Date | Category | Description | Income | Expense | Account | Type` layout. It:
+The importer is **part of the Apps Script** — no Python, no command line, no
+outside apps. You pick a CSV from a pop-up and it's cleaned and written straight
+into the **Transactions** tab. Today it understands the
+[Everlance](https://everlance.com) export format; it's built as a small registry
+of **format profiles**, so more banks/exports can be added later without a
+rewrite (Everlance is profile #1).
 
-- splits the signed `Amount` into Income/Expense;
+**First-time setup (once):**
+
+1. Run **Finance ▸ Rebuild tracker** so all tabs exist — including the new
+   **Settings** tab.
+2. On the **Settings** tab, fill in **Name tokens (ALL must match)** with your
+   name parts (e.g. your first and last name, one per cell). This is the only
+   personal detail the importer needs that isn't pre-filled — it lets it spot
+   *your* self-Zelle / Cash App transfers. The other rows come pre-seeded; edit
+   them when your accounts change (see below).
+
+**Each import:**
+
+3. **Finance ▸ Import transactions (CSV)…** → a pop-up opens.
+4. Choose your Everlance CSV export and click **Import**. The cleaned rows
+   **replace** the Transactions tab and a summary appears (rows kept, transfers,
+   duplicates removed, income/expense). The column **H** running balance
+   recomputes on its own.
+5. On the **Accounts** tab, fill each **Opening Balance** (what the account held
+   before your first transaction; **credit cards negative**). The **Current
+   Balance** and the Dashboard's Cash / Credit / Net-worth totals update
+   automatically. *(One-time — opening balances stay put after this.)*
+
+### What the importer does
+
+- **splits the signed `Amount`** into Income/Expense;
 - **tags each row with its Account and Type** — the bank account name (e.g.
   `Checking 3620`, `Robinhood Credit Card`) and whether it's `Cash` or `Credit`,
   so the **Accounts** tab can derive per-account balances;
 - **keeps internal transfers but labels them `Transfer`** — masked-account moves,
-  self-Zelle/Cash App, Capital One 360 shuffles, and credit-card payments (BOTH
-  legs: the money leaving checking *and* the matching "payment received" on the
-  card, including payments labelled with only the issuer name — e.g. a "Robinhood"
-  debit on checking paying the Robinhood Credit Card, see `OWN_CARD_ISSUERS`).
-  These are needed so paying a card lowers cash **and** lowers card debt, but the
-  Dashboard excludes the `Transfer` category from income/expense/spend totals so
-  nothing is double-counted. Purchases made **on** a card stay as ordinary
-  expenses;
+  self-Zelle/Cash App, sub-account shuffles, and credit-card payments (BOTH legs:
+  the money leaving checking *and* the matching "payment received" on the card,
+  including payments labelled with only the issuer name — e.g. a "Robinhood" debit
+  on checking paying the Robinhood Credit Card). These move balances (paying a
+  card lowers cash **and** card debt) but the Dashboard excludes the `Transfer`
+  category from income/expense/spend totals, so nothing is double-counted.
+  Purchases made **on** a card stay as ordinary expenses;
 - **removes exact-duplicate transactions** — if an account was synced twice, the
   same charge appears 2–3× with an identical bank reference; each real
   transaction is counted once (keyed on amount + date + merchant + bank
   description + account, ignoring tag/category columns);
-- maps Everlance's ~70 categories down to the tracker's 10, and additionally
-  classifies vaguely-labelled bank rows (e.g. "Debit") by **merchant keyword**
-  (`MERCHANT_MAP`), so the GasBuddy fuel app lands in Transport instead of the
-  catch-all "Other".
-
-To classify more merchants, add `('KEYWORD', 'Category')` rows to
-`MERCHANT_MAP` near the top of the script.
-
-```bash
-python3 scripts/convert_everlance.py everlance_export.csv transactions.csv
-```
-
-Then, in the multi-tab tracker:
-
-1. Run **Finance ▸ Rebuild tracker** once so the Transactions tab has the
-   `Account`/`Type`/`Balance` columns and the **Accounts** tab exists.
-2. Select cell **A1** of the **Transactions** tab, then **File ▸ Import ▸
-   Upload**, choose `transactions.csv`, and pick **"Replace data at selected
-   cell"** (separator: comma; keep *Convert text to numbers/dates* ticked). This
-   fills columns A–G; the `Balance` formula in column H recomputes on its own.
-3. On the **Accounts** tab, fill each **Opening Balance** (what the account held
-   before the first imported transaction; **credit cards negative**). The
-   **Current Balance** and the Dashboard's Cash / Credit / Net-worth totals
-   update automatically.
+- maps Everlance's ~70 categories down to the tracker's 10, classifying
+  vaguely-labelled bank rows (e.g. "Debit") by **merchant keyword** so the
+  GasBuddy fuel app lands in Transport instead of the catch-all "Other".
 
 ### Re-running each month
 
-When a new month's activity is in Everlance, refresh the tracker like this:
+1. **Export the full history** from Everlance again — not just the new month. The
+   import **replaces** the whole Transactions tab, so a partial export would wipe
+   earlier rows. (Keep an archive copy if you like.)
+2. **Finance ▸ Import transactions (CSV)…**, choose the new export, **Import**.
+   That's it — the balance, Accounts and Dashboard all recompute. Your opening
+   balances are untouched.
 
-1. **Export the full history** from Everlance again (not just the new month —
-   the import below *replaces* the whole Transactions tab, so a partial export
-   would wipe earlier rows). Keep an archive copy if you prefer.
-2. **Re-run the converter** on the new export:
-   ```bash
-   python3 scripts/convert_everlance.py new_export.csv transactions.csv
-   ```
-3. **Re-import:** select **Transactions!A1**, then **File ▸ Import ▸ Upload**
-   `transactions.csv`, and pick **"Replace data at selected cell"** (separator:
-   comma; keep *Convert text to numbers/dates* ticked).
-4. **Extend the running balance:** drag the column **H** formula down to the new
-   last row if the import added rows past it.
-
-Your **Opening Balances** on the Accounts tab are entered **once** and stay put —
-you don't touch them again. The Current Balance and Dashboard totals re-derive
-from the freshly imported transactions.
-
-> **When you add or close an account/card:** the converter's transfer detection
-> is keyed to *your* accounts via a few hardcoded lists near the top of
-> `scripts/convert_everlance.py`. Add the new account's name/keyword to the list
-> that matches how it appears in the export, or its transfers will be miscounted
-> as income/expense:
+> **When you add or close an account/card:** the importer recognises your
+> transfers using the lists on the **Settings** tab. Add the new account's
+> name/keyword to the row that matches how it appears in the export, or its
+> transfers will be miscounted as income/expense:
 >
-> | List | Covers |
-> |------|--------|
-> | `SELF_NAME_TOKENS` | your name, for self-Zelle / Cash App moves |
-> | `OWN_BANKS` + `OWN_BANK_RAILS` | your other linked banks (instant-payment moves) |
-> | `OWN_360_ACCTS` | your Capital One 360 sub-accounts |
-> | `OWN_CARDS` + `CARD_PAY_RAILS` | cards you pay via a labelled payment rail |
-> | `OWN_CARD_ISSUERS` | cards paid by an issuer-name-only outflow from checking |
+> | Settings row | Covers |
+> |--------------|--------|
+> | **Name tokens** | your name, for self-Zelle / Cash App moves |
+> | **Own banks** + **Own bank rails** | your other linked banks (instant-payment moves) |
+> | **Own sub-accounts** | your savings/checking sub-accounts |
+> | **Own cards (rail-paid)** + **Card pay rails** | cards you pay via a labelled payment rail |
+> | **Own card issuers (name-only)** | cards paid by an issuer-name-only outflow from checking |
 >
-> Separately, to refine *categories* for vague bank rows, add
-> `('KEYWORD', 'Category')` to `MERCHANT_MAP` (see above).
+> Add a value by typing it in the next empty cell on that row — no code editing.
+
+### Optional: command-line converter (legacy)
+
+A standalone Python version, `scripts/convert_everlance.py`, does the same
+conversion outside the sheet (`python3 scripts/convert_everlance.py export.csv
+out.csv`, then import the result at `Transactions!A1`). The in-sheet importer is
+the recommended path; the script is kept as a reference and for batch/CLI use.
 
 ## Roadmap (ideas for v2)
 
-- Charts on the Dashboard (cashflow over time, category pie).
+- A universal column-mapper: import *any* CSV by mapping its columns to the
+  Transactions template (the profile engine is already built to accept it).
+- More built-in bank/export profiles.
 - Multi-currency support.
-- More bank/export formats for the import script.

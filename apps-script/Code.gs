@@ -21,7 +21,8 @@ var SHEETS = {
   DASH: 'Dashboard',
   RECUR: 'Recurring',
   GOALS: 'Goals',
-  CATS: 'Categories'
+  CATS: 'Categories',
+  SETTINGS: 'Settings'
 };
 
 var DEFAULT_CATEGORIES = [
@@ -37,6 +38,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Finance')
     .addItem('Rebuild tracker (setup)', 'setup')
+    .addItem('Import transactions (CSV)…', 'importEverlanceCsv')
     .addSeparator()
     .addItem('About', 'about_')
     .addToUi();
@@ -59,6 +61,7 @@ function setup() {
   buildAccounts_(ss);                // opening balances -> current balances
   buildRecurring_(ss, cats);
   buildGoals_(ss);
+  buildSettings_(ss);                // personal lists for the CSV importer
   buildDashboard_(ss, cats);
   buildCharts_(ss, cats);            // charts read from the Dashboard tables
   cleanupDefaultSheet_(ss);
@@ -449,6 +452,339 @@ function buildCharts_(ss, cats) {
     dash.insertChart(progress);
   }
 }
+
+// ==================================================================
+//  CSV IMPORT — self-contained, no external tools
+// ------------------------------------------------------------------
+//  Finance ▸ Import transactions (CSV) opens a file picker, reads the
+//  file in the browser, and hands the text to processImportedCsv().
+//  A small "format profile" engine cleans it into the Transactions
+//  layout. Everlance is profile #1; adding a new bank/format later is
+//  just one more entry in PROFILES — no rewrite. The personal account
+//  lists that drive transfer-detection live on the Settings tab, so
+//  this script stays generic (your details aren't baked into the code).
+// ==================================================================
+
+// ---- Settings tab: personal lists the importer reads -------------
+// Each row: col A = list name, cols B…→ = one value per cell. Add a
+// value by typing in the next empty cell; the importer uppercases and
+// trims on read. The seeds below are institution/keyword lists — they
+// are NOT your name. Fill "Name tokens" yourself (kept out of code).
+var SETTINGS_ROWS = [
+  ['Name tokens (ALL must match)', [],
+    'Your name parts (e.g. first + last). Used to spot self Zelle/Cash App. Blank = skip name matching.'],
+  ['Self P2P channels', ['ZELLE', 'PERSON-TO-PERSON', 'CASH APP', 'RTP'],
+    'Instant-payment rails that, with your name, mean a self-transfer.'],
+  ['Own banks', ['CAPITAL ONE'],
+    'Your other linked banks (movements to/from them are transfers).'],
+  ['Own bank rails', ['RTP', 'PERSON-TO-PERSON', 'INTERNET PAYMENT', 'ACCTVERIFY', 'TRANSFER'],
+    'Rails that signal an own-bank movement.'],
+  ['Own bank exclude', ['ARENA'],
+    'Same-named merchants to NOT treat as your bank (e.g. a venue).'],
+  ['Own sub-accounts', ['360 PERFORMANCE SAVINGS', '360 CHECKING', '360 SAVINGS'],
+    'Your savings/checking sub-accounts (shuffles between them are transfers).'],
+  ['Own cards (rail-paid)', ['DISCOVER'],
+    'Cards you pay where the bank labels the outflow with a payment rail.'],
+  ['Card pay rails', ['INTERNET PAYMENT', 'E-PAYMENT', 'EPAYMENT', 'ONLINE PAYMENT', 'AUTOPAY', 'BILL PAYMENT'],
+    'Rails that indicate a credit-card payment.'],
+  ['Own card issuers (name-only)', ['ROBINHOOD'],
+    'Cards paid by an issuer-name-only outflow from checking (no rail in the text).']
+];
+
+// Map each Settings row label -> the cfg field the importer uses.
+var SETTINGS_KEYS = {
+  'Name tokens (ALL must match)': 'nameTokens',
+  'Self P2P channels': 'selfChannels',
+  'Own banks': 'ownBanks',
+  'Own bank rails': 'ownBankRails',
+  'Own bank exclude': 'ownBankExclude',
+  'Own sub-accounts': 'own360',
+  'Own cards (rail-paid)': 'ownCards',
+  'Card pay rails': 'cardPayRails',
+  'Own card issuers (name-only)': 'ownCardIssuers'
+};
+
+function buildSettings_(ss) {
+  var sheet = getOrCreate_(ss, SHEETS.SETTINGS);
+  header_(sheet, ['Setting', 'Values (one per cell, add more to the right →)']);
+  sheet.getRange('A1').setNote(
+    'These lists let the CSV importer recognise transfers between your own ' +
+    'accounts (so they move balances without distorting spend totals). ' +
+    'Add a value by typing it in the next empty cell on that row.');
+
+  // Seed once (preserve user edits on re-run).
+  if (sheet.getRange(2, 1).getValue() === '') {
+    for (var i = 0; i < SETTINGS_ROWS.length; i++) {
+      var r = 2 + i;
+      var label = SETTINGS_ROWS[i][0];
+      var vals = SETTINGS_ROWS[i][1];
+      var note = SETTINGS_ROWS[i][2];
+      sheet.getRange(r, 1).setValue(label).setNote(note);
+      if (vals.length) sheet.getRange(r, 2, 1, vals.length).setValues([vals]);
+    }
+  }
+  sheet.setColumnWidth(1, 230);
+  sheet.setFrozenColumns(1);
+}
+
+// Read the Settings tab into a cfg object. Missing/blank rows fall back
+// to DEFAULT_CFG. Name tokens default to [] so your name is never in code.
+function readSettings_(ss) {
+  var cfg = {
+    nameTokens: [],
+    selfChannels: ['ZELLE', 'PERSON-TO-PERSON', 'CASH APP', 'RTP'],
+    ownBanks: ['CAPITAL ONE'],
+    ownBankRails: ['RTP', 'PERSON-TO-PERSON', 'INTERNET PAYMENT', 'ACCTVERIFY', 'TRANSFER'],
+    ownBankExclude: ['ARENA'],
+    own360: ['360 PERFORMANCE SAVINGS', '360 CHECKING', '360 SAVINGS'],
+    ownCards: ['DISCOVER'],
+    cardPayRails: ['INTERNET PAYMENT', 'E-PAYMENT', 'EPAYMENT', 'ONLINE PAYMENT', 'AUTOPAY', 'BILL PAYMENT'],
+    ownCardIssuers: ['ROBINHOOD']
+  };
+  var sheet = ss.getSheetByName(SHEETS.SETTINGS);
+  if (!sheet || sheet.getLastRow() < 2 || sheet.getLastColumn() < 2) return cfg;
+  var data = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  for (var i = 0; i < data.length; i++) {
+    var label = String(data[i][0]).trim();
+    var key = SETTINGS_KEYS[label];
+    if (!key) continue;
+    var vals = [];
+    for (var c = 1; c < data[i].length; c++) {
+      var v = String(data[i][c]).trim();
+      if (v) vals.push(v.toUpperCase());
+    }
+    cfg[key] = vals; // explicit (even empty) overrides the default
+  }
+  return cfg;
+}
+
+// ---- Format-profile engine (built to extend) ---------------------
+// Add a new bank/format by pushing another {name, detect, parse} here.
+var PROFILES = [{
+  name: 'Everlance',
+  detect: function (values) { return everlanceHeaderRow_(values) !== -1; },
+  parse: function (values, cfg) { return parseEverlance_(values, cfg); }
+}];
+
+function pickProfile_(values) {
+  for (var i = 0; i < PROFILES.length; i++) {
+    if (PROFILES[i].detect(values)) return PROFILES[i];
+  }
+  throw new Error('Unrecognised CSV format (no matching import profile).');
+}
+
+// ---- Everlance taxonomy (format-specific, not personal) ----------
+var EV_CATEGORY_MAP = {
+  'Payroll': 'Income', 'Revenue': 'Income', 'Interest Earned': 'Income',
+  'Deposit': 'Income', 'Check': 'Income',
+  'Gas Stations': 'Transport', 'Gasoline': 'Transport', 'Tolls and Fees': 'Transport',
+  'Car Dealers and Leasing': 'Transport', 'Car and Truck Rentals': 'Transport',
+  'Car Wash and Detail': 'Transport', 'Other Vehicle Related Expenses': 'Transport',
+  'Maintenance and Repair': 'Transport', 'Shipping and Freight': 'Transport',
+  'Restaurants': 'Dining', 'Fast Food': 'Dining', 'Food and Beverage': 'Dining',
+  'Business Meals & Entertainment': 'Dining',
+  'Supermarkets and Groceries': 'Groceries', 'Food and Beverage Store': 'Groceries',
+  'Convenience Stores': 'Groceries', 'Warehouses and Wholesale Stores': 'Groceries',
+  'Telecommunication Services': 'Utilities', 'Insurance': 'Utilities',
+  'Lodging': 'Housing', 'Loans and Mortgages': 'Housing', 'Storage': 'Housing',
+  'Hardware Store': 'Housing',
+  'Pharmacies': 'Health', 'Dentists': 'Health', 'Glasses and Optometrist': 'Health',
+  'Personal Care': 'Health', 'Gyms and Fitness Centers': 'Health',
+  'Arts and Entertainment': 'Entertainment', 'Recreation': 'Entertainment',
+  'Subscription': 'Entertainment', 'Digital Purchase': 'Entertainment',
+  'Computers and Electronics': 'Entertainment', 'Tobacco': 'Entertainment',
+  'Stock Brokers': 'Savings'
+};
+var EV_GENERIC = ['Credit', 'Debit', 'Withdrawal', 'Payment', 'Credit Card', 'Banking and Finance'];
+// Merchant keyword -> category, for vague bank rows (e.g. GasBuddy labelled "Debit").
+var EV_MERCHANT_MAP = [
+  ['GASBUDDY', 'Transport'], ['EZPASS', 'Transport'], ['EZ PASS', 'Transport'],
+  ['E-ZPASS', 'Transport'], ['ETOLL', 'Transport'], ['E-TOLL', 'Transport'],
+  ['ETOLLAVIS', 'Transport'], ['MARYLAND MVA', 'Transport']
+];
+var EV_MASKED_XFER = /(TO|FROM)\s+\*+\s*\d{3,}/i;
+var EV_CARD_PAY_MARKERS = ['THANK YOU', 'INTERNET PAYMENT', 'AUTOPAY'];
+var EV_CARD_REWARD_MARKERS = ['STATEMENT CREDIT', 'CASHBACK', 'POINTS', 'REDEMPTION', 'REWARD'];
+
+function anyIn_(t, list) {
+  for (var i = 0; i < list.length; i++) { if (t.indexOf(list[i]) !== -1) return true; }
+  return false;
+}
+function round2_(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
+
+function money_(s) {
+  s = String(s).trim().replace(/\$/g, '').replace(/,/g, '');
+  if (s === '' || s === '-') return 0.0;
+  var neg = s.charAt(0) === '-';
+  if (neg) s = s.replace(/^-+/, '');
+  var v = parseFloat(s);
+  if (isNaN(v)) v = 0.0;
+  return neg ? -v : v;
+}
+
+function mapCategory_(ecat, merch, isIncome) {
+  var m = String(merch).toUpperCase();
+  for (var i = 0; i < EV_MERCHANT_MAP.length; i++) {
+    if (m.indexOf(EV_MERCHANT_MAP[i][0]) !== -1) return EV_MERCHANT_MAP[i][1];
+  }
+  if (EV_CATEGORY_MAP.hasOwnProperty(ecat)) return EV_CATEGORY_MAP[ecat];
+  if (EV_GENERIC.indexOf(ecat) !== -1) return isIncome ? 'Income' : 'Other';
+  return isIncome ? 'Income' : 'Other';
+}
+
+function isTransfer_(text, cfg) {
+  var t = String(text).toUpperCase();
+  if (EV_MASKED_XFER.test(t)) return true;
+  if (t.indexOf('ONLINE TRANSFER') !== -1 || t.indexOf('DEPOSIT TRANSFER') !== -1) return true;
+  if (cfg.nameTokens.length &&
+      cfg.nameTokens.every(function (tok) { return t.indexOf(tok) !== -1; }) &&
+      anyIn_(t, cfg.selfChannels)) return true;
+  if (anyIn_(t, cfg.ownBanks) && !anyIn_(t, cfg.ownBankExclude) && anyIn_(t, cfg.ownBankRails)) return true;
+  if (anyIn_(t, cfg.own360)) return true;
+  if (anyIn_(t, cfg.ownCards) && anyIn_(t, cfg.cardPayRails)) return true;
+  return false;
+}
+
+function isCardPayment_(account, amount, merch, bankdesc, ecat, cfg) {
+  var acct = String(account).toUpperCase();
+  var t = (String(merch) + ' ' + String(bankdesc)).toUpperCase();
+  // Checking-side leg: outflow to an issuer the holder pays directly (name-only).
+  if (acct.indexOf('CARD') === -1 && amount < 0 && anyIn_(t, cfg.ownCardIssuers)) return true;
+  if (acct.indexOf('CARD') === -1) return false;
+  if (amount <= 0) return false;                 // a purchase on the card = real expense
+  if (anyIn_(t, EV_CARD_REWARD_MARKERS)) return false; // cashback / statement credit = keep
+  if (anyIn_(t, EV_CARD_PAY_MARKERS)) return true;
+  if (String(ecat).trim() === 'Credit Card' &&
+      ['PAYMENT', 'INTERNET PAYMENT'].indexOf(String(merch).trim().toUpperCase()) !== -1) return true;
+  return false;
+}
+
+function everlanceHeaderRow_(values) {
+  for (var i = 0; i < values.length; i++) {
+    var r = values[i];
+    if (r[0] === 'Amount' && r[1] === 'Date' && r[2] === 'Merchant' && r[3] === 'Category') return i;
+  }
+  return -1;
+}
+
+// Core Everlance -> Transactions conversion. Mirrors scripts/convert_everlance.py
+// (verified row-for-row against it). Returns {rows, stats}; dates stay as
+// 'YYYY-MM-DD' strings here and become real Dates in writeTransactions_.
+function parseEverlance_(values, cfg) {
+  var hi = everlanceHeaderRow_(values);
+  if (hi === -1) throw new Error('Not an Everlance export (header row not found).');
+  var out = [];
+  var stats = { kept: 0, transfers: 0, dupes: 0, income: 0.0, expense: 0.0 };
+  var seen = {};
+  for (var j = hi + 1; j < values.length; j++) {
+    var r = values[j];
+    if (r.length < 4 || !String(r[1]).trim()) continue;
+    var amt = money_(r[0]);
+    var date = String(r[1]).trim();
+    var merch = String(r[2]).trim();
+    var bd = r.length > 8 ? String(r[8]).trim() : '';
+    var ac = r.length > 9 ? String(r[9]).trim() : '';
+    var key = round2_(amt) + '|' + date + '|' + merch.toUpperCase() + '|' +
+              bd.toUpperCase() + '|' + ac.toUpperCase();
+    if (seen[key]) { stats.dupes++; continue; }
+    seen[key] = true;
+    var ecat = String(r[3]).trim() || 'Uncategorized';
+    var acct = ac.split(' - ')[0].trim();
+    var atype = ac.toUpperCase().indexOf('CARD') !== -1 ? 'Credit' : 'Cash';
+    var cat;
+    if (isTransfer_(merch + ' ' + bd, cfg) || isCardPayment_(ac, amt, merch, bd, ecat, cfg)) {
+      cat = 'Transfer'; stats.transfers++;
+    } else {
+      cat = mapCategory_(ecat, merch, amt > 0);
+      if (amt > 0) stats.income = round2_(stats.income + round2_(amt));
+      else stats.expense = round2_(stats.expense + round2_(-amt));
+    }
+    var inc = amt > 0 ? round2_(amt) : '';
+    var exp = amt < 0 ? round2_(-amt) : '';
+    out.push([date, cat, merch, inc, exp, acct, atype]);
+    stats.kept++;
+  }
+  out.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
+  return { rows: out, stats: stats };
+}
+
+// ---- Write cleaned rows into the Transactions tab ----------------
+// Full-history model: replaces the A:G data region (col H balance
+// formulas, laid to TX_LAST_ROW by buildTransactions_, are left alone).
+function writeTransactions_(ss, rows) {
+  var tx = ss.getSheetByName(SHEETS.TX);
+  if (!tx) throw new Error('Transactions tab not found — run "Rebuild tracker" first.');
+
+  var lastRow = tx.getLastRow();
+  if (lastRow >= 2) tx.getRange(2, 1, lastRow - 1, 7).clearContent();
+  if (!rows.length) return;
+
+  var values = rows.map(function (r) {
+    var p = String(r[0]).split('-');
+    var d = (p.length === 3) ? new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])) : r[0];
+    return [d, r[1], r[2], r[3], r[4], r[5], r[6]];
+  });
+  tx.getRange(2, 1, values.length, 7).setValues(values);
+  tx.getRange(2, 1, values.length, 1).setNumberFormat('yyyy-mm-dd');
+  tx.getRange(2, 4, values.length, 2).setNumberFormat(CURRENCY);
+}
+
+// ---- Menu handler: file-picker dialog ----------------------------
+// (Non-underscore names are required for menu items and google.script.run.)
+function importEverlanceCsv() {
+  var html = HtmlService.createHtmlOutput(IMPORT_DIALOG_HTML_)
+    .setWidth(460).setHeight(260);
+  SpreadsheetApp.getUi().showModalDialog(html, 'Import transactions from CSV');
+}
+
+// Called from the dialog with the file's text. Cleans + writes, returns a
+// human-readable summary string shown back in the dialog.
+function processImportedCsv(text) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var values = Utilities.parseCsv(text);
+  var cfg = readSettings_(ss);
+  var profile = pickProfile_(values);
+  var res = profile.parse(values, cfg);
+  writeTransactions_(ss, res.rows);
+  var s = res.stats;
+  ss.toast('Imported ' + s.kept + ' rows from ' + profile.name + '.', 'Import complete', 6);
+  return profile.name + ' import complete.\n' +
+    'Kept ' + s.kept + ' transactions (' + s.transfers + ' transfers), ' +
+    'removed ' + s.dupes + ' duplicates.\n' +
+    'Income $' + s.income.toFixed(2) + '   Expense $' + s.expense.toFixed(2) + '.\n' +
+    'Tip: drag the column-H balance formula down if you have more rows than before.';
+}
+
+var IMPORT_DIALOG_HTML_ =
+  '<!DOCTYPE html><html><head><base target="_top"><style>' +
+  'body{font-family:Arial,Helvetica,sans-serif;margin:16px;font-size:13px;color:#222}' +
+  'button{background:#1f3864;color:#fff;border:0;padding:8px 16px;border-radius:4px;cursor:pointer}' +
+  'button:disabled{background:#9aa5b1;cursor:default}' +
+  '#status{margin-top:14px;white-space:pre-wrap;line-height:1.4}' +
+  '</style></head><body>' +
+  '<p>Choose your CSV export (Everlance supported today). It is cleaned and ' +
+  'written to the <b>Transactions</b> tab, <b>replacing</b> existing rows.</p>' +
+  '<input type="file" id="file" accept=".csv,text/csv"><br><br>' +
+  '<button id="btn" onclick="go()">Import</button>' +
+  '<div id="status"></div>' +
+  '<script>' +
+  'function go(){' +
+  'var f=document.getElementById("file").files[0];' +
+  'var s=document.getElementById("status");' +
+  'if(!f){s.textContent="Please choose a file first.";return;}' +
+  'document.getElementById("btn").disabled=true;' +
+  's.textContent="Reading file…";' +
+  'var rd=new FileReader();' +
+  'rd.onload=function(e){s.textContent="Converting…";' +
+  'google.script.run' +
+  '.withSuccessHandler(function(msg){s.textContent=msg;})' +
+  '.withFailureHandler(function(err){s.textContent="Error: "+err.message;' +
+  'document.getElementById("btn").disabled=false;})' +
+  '.processImportedCsv(e.target.result);};' +
+  'rd.onerror=function(){s.textContent="Could not read the file.";' +
+  'document.getElementById("btn").disabled=false;};' +
+  'rd.readAsText(f);}' +
+  '</script></body></html>';
 
 // Remove the auto-created "Sheet1" if it's empty and unused.
 function cleanupDefaultSheet_(ss) {
