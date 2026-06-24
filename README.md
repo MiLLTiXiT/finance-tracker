@@ -104,10 +104,19 @@ finance-tracker/
 
 `scripts/convert_everlance.py` converts an [Everlance](https://everlance.com)
 CSV export into the tracker's `Date | Category | Description | Income | Expense`
-layout. It splits the signed `Amount` into Income/Expense, **drops internal
-account-to-account transfers** (own-account shuffles that would otherwise
-inflate both totals), and maps Everlance's ~70 categories down to the
-tracker's 10.
+layout. It:
+
+- splits the signed `Amount` into Income/Expense;
+- **drops internal account-to-account transfers** — masked-account moves,
+  self-Zelle/Cash App, Capital One 360 savings/checking shuffles, and payments
+  to your own credit card — which would otherwise inflate both totals;
+- maps Everlance's ~70 categories down to the tracker's 10, and additionally
+  classifies vaguely-labelled bank rows (e.g. "Debit") by **merchant keyword**
+  (`MERCHANT_MAP`), so the GasBuddy fuel app lands in Transport instead of the
+  catch-all "Other".
+
+To classify more merchants, add `('KEYWORD', 'Category')` rows to
+`MERCHANT_MAP` near the top of the script.
 
 ```bash
 python3 scripts/convert_everlance.py everlance_export.csv transactions.csv

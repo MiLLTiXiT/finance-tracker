@@ -52,7 +52,24 @@ CATEGORY_MAP = {
 # Generic bank labels: direction decides (money in = Income, out = Other).
 GENERIC = {'Credit','Debit','Withdrawal','Payment','Credit Card','Banking and Finance'}
 
-def map_category(everlance_cat, is_income):
+# Merchant-keyword -> category. Many bank rows carry only a vague "Debit"/
+# "Credit Card" label, so classify them by WHO was paid. The keyword is matched
+# (uppercased substring) against the merchant name; first hit wins. This pulls
+# clearly-identifiable spend out of the catch-all "Other" bucket — e.g. the
+# GasBuddy fuel-payment app, which the bank reports only as "Debit".
+MERCHANT_MAP = [
+    ('GASBUDDY', 'Transport'),                                  # fuel app
+    ('EZPASS', 'Transport'), ('EZ PASS', 'Transport'),
+    ('E-ZPASS', 'Transport'), ('ETOLL', 'Transport'),
+    ('E-TOLL', 'Transport'), ('ETOLLAVIS', 'Transport'),
+    ('MARYLAND MVA', 'Transport'),
+]
+
+def map_category(everlance_cat, merch, is_income):
+    m = merch.upper()
+    for kw, cat in MERCHANT_MAP:
+        if kw in m:
+            return cat
     if everlance_cat in CATEGORY_MAP:
         return CATEGORY_MAP[everlance_cat]
     if everlance_cat in GENERIC:
@@ -81,6 +98,19 @@ OWN_BANKS = ['CAPITAL ONE']
 OWN_BANK_RAILS = ['RTP', 'PERSON-TO-PERSON', 'INTERNET PAYMENT', 'ACCTVERIFY', 'TRANSFER']
 OWN_BANK_EXCLUDE = ['ARENA']
 
+# The holder's own Capital One 360 sub-accounts. "WITHDRAWAL TO 360 ..." is
+# money shuffled from this account into the holder's own savings/checking, and
+# deposits back are the reverse — both are own-account moves, not real spend.
+OWN_360_ACCTS = ['360 PERFORMANCE SAVINGS', '360 CHECKING', '360 SAVINGS']
+
+# The holder's own credit cards. Paying your own card from checking is a
+# transfer to a liability account, not a fresh expense (the card's purchases,
+# if tracked, are where the real spend lives). Only the *payment* rails count —
+# guarded so ordinary purchases at these merchants aren't swept up.
+OWN_CARDS = ['DISCOVER']
+CARD_PAY_RAILS = ['INTERNET PAYMENT', 'E-PAYMENT', 'EPAYMENT',
+                  'ONLINE PAYMENT', 'AUTOPAY', 'BILL PAYMENT']
+
 def _has_self_name(t):
     return all(tok in t for tok in SELF_NAME_TOKENS)
 
@@ -99,6 +129,12 @@ def is_transfer(text):
     if any(b in t for b in OWN_BANKS) and not any(x in t for x in OWN_BANK_EXCLUDE):
         if any(r in t for r in OWN_BANK_RAILS):
             return True
+    # Moves to/from the holder's own Capital One 360 sub-accounts.
+    if any(a in t for a in OWN_360_ACCTS):
+        return True
+    # Paying off the holder's own credit card (transfer to a liability).
+    if any(c in t for c in OWN_CARDS) and any(r in t for r in CARD_PAY_RAILS):
+        return True
     return False
 
 def money(s):
@@ -125,7 +161,7 @@ def convert(raw):
             stats['transfers']+=1
             continue
         is_income = amt>0
-        cat=map_category(ecat, is_income)
+        cat=map_category(ecat, merch, is_income)
         inc = round(amt,2) if amt>0 else ''
         exp = round(-amt,2) if amt<0 else ''
         if inc: stats['income']+=inc
