@@ -5,7 +5,10 @@ layout: Date | Category | Description | Income | Expense.
 
 - Splits Everlance's single signed Amount into Income / Expense.
 - Drops internal account-to-account transfers (money moved between your
-  own accounts), which otherwise inflate both income and expense.
+  own accounts), which otherwise inflate both income and expense. This
+  includes BOTH legs of a credit-card payment: the money leaving checking
+  AND the matching "payment received" entry on the card account. The real
+  expenses are the individual purchases ON the card, which are kept.
 - Maps Everlance's ~70 categories down to the tracker's 10.
 
 Usage:  python3 convert_everlance.py input_everlance.csv output.csv
@@ -132,8 +135,33 @@ def is_transfer(text):
     # Moves to/from the holder's own Capital One 360 sub-accounts.
     if any(a in t for a in OWN_360_ACCTS):
         return True
-    # Paying off the holder's own credit card (transfer to a liability).
+    # Paying off the holder's own credit card (transfer to a liability) —
+    # the DEPOSIT-side leg (money leaving checking).
     if any(c in t for c in OWN_CARDS) and any(r in t for r in CARD_PAY_RAILS):
+        return True
+    return False
+
+# The export also includes the credit-card accounts themselves, so each card
+# payment shows up a SECOND time as money arriving at the card ("payment
+# received"). That leg must be dropped too, or it gets miscounted as income.
+# Purchases on the card (money out) are real expenses and are kept.
+CARD_ACCT_HINT = 'CARD'                       # e.g. "Discover it Card", "Robinhood Credit Card"
+CARD_PAY_MARKERS = ['THANK YOU', 'INTERNET PAYMENT', 'AUTOPAY']
+# Genuine rewards/refunds arriving at the card — NOT payments, keep as income.
+CARD_REWARD_MARKERS = ['STATEMENT CREDIT', 'CASHBACK', 'POINTS', 'REDEMPTION', 'REWARD']
+
+def is_card_payment(account, amount, merch, bankdesc, ecat):
+    """The card-side leg of a credit-card payment (money arriving at the card)."""
+    if CARD_ACCT_HINT not in (account or '').upper():
+        return False
+    if amount <= 0:                # negative = a purchase on the card = real expense
+        return False
+    t = (merch + ' ' + bankdesc).upper()
+    if any(rw in t for rw in CARD_REWARD_MARKERS):
+        return False               # cashback / statement credit / points = keep
+    if any(m in t for m in CARD_PAY_MARKERS):
+        return True
+    if ecat.strip() == 'Credit Card' and merch.strip().upper() in ('PAYMENT', 'INTERNET PAYMENT'):
         return True
     return False
 
@@ -157,7 +185,9 @@ def convert(raw):
         amt=money(r[0]); date=r[1].strip(); merch=r[2].strip()
         ecat=r[3].strip() or 'Uncategorized'
         bankdesc=r[8].strip() if len(r)>8 else ''
-        if is_transfer(merch+' '+bankdesc):
+        account=r[9].strip() if len(r)>9 else ''
+        if is_transfer(merch+' '+bankdesc) or \
+           is_card_payment(account, amt, merch, bankdesc, ecat):
             stats['transfers']+=1
             continue
         is_income = amt>0
