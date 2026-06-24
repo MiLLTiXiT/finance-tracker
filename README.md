@@ -151,6 +151,44 @@ Then, in the multi-tab tracker:
    **Current Balance** and the Dashboard's Cash / Credit / Net-worth totals
    update automatically.
 
+### Re-running each month
+
+When a new month's activity is in Everlance, refresh the tracker like this:
+
+1. **Export the full history** from Everlance again (not just the new month —
+   the import below *replaces* the whole Transactions tab, so a partial export
+   would wipe earlier rows). Keep an archive copy if you prefer.
+2. **Re-run the converter** on the new export:
+   ```bash
+   python3 scripts/convert_everlance.py new_export.csv transactions.csv
+   ```
+3. **Re-import:** select **Transactions!A1**, then **File ▸ Import ▸ Upload**
+   `transactions.csv`, and pick **"Replace data at selected cell"** (separator:
+   comma; keep *Convert text to numbers/dates* ticked).
+4. **Extend the running balance:** drag the column **H** formula down to the new
+   last row if the import added rows past it.
+
+Your **Opening Balances** on the Accounts tab are entered **once** and stay put —
+you don't touch them again. The Current Balance and Dashboard totals re-derive
+from the freshly imported transactions.
+
+> **When you add or close an account/card:** the converter's transfer detection
+> is keyed to *your* accounts via a few hardcoded lists near the top of
+> `scripts/convert_everlance.py`. Add the new account's name/keyword to the list
+> that matches how it appears in the export, or its transfers will be miscounted
+> as income/expense:
+>
+> | List | Covers |
+> |------|--------|
+> | `SELF_NAME_TOKENS` | your name, for self-Zelle / Cash App moves |
+> | `OWN_BANKS` + `OWN_BANK_RAILS` | your other linked banks (instant-payment moves) |
+> | `OWN_360_ACCTS` | your Capital One 360 sub-accounts |
+> | `OWN_CARDS` + `CARD_PAY_RAILS` | cards you pay via a labelled payment rail |
+> | `OWN_CARD_ISSUERS` | cards paid by an issuer-name-only outflow from checking |
+>
+> Separately, to refine *categories* for vague bank rows, add
+> `('KEYWORD', 'Category')` to `MERCHANT_MAP` (see above).
+
 ## Roadmap (ideas for v2)
 
 - Charts on the Dashboard (cashflow over time, category pie).
