@@ -17,6 +17,7 @@
 // ---- Config -------------------------------------------------------
 var SHEETS = {
   TX: 'Transactions',
+  ACCT: 'Accounts',
   DASH: 'Dashboard',
   RECUR: 'Recurring',
   GOALS: 'Goals',
@@ -55,6 +56,7 @@ function setup() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var cats = buildCategories_(ss);   // build first; others reference it
   buildTransactions_(ss, cats);
+  buildAccounts_(ss);                // opening balances -> current balances
   buildRecurring_(ss, cats);
   buildGoals_(ss);
   buildDashboard_(ss, cats);
@@ -104,42 +106,92 @@ function buildCategories_(ss) {
 // ---- 2. Transactions ---------------------------------------------
 function buildTransactions_(ss, cats) {
   var sheet = getOrCreate_(ss, SHEETS.TX);
-  header_(sheet, ['Date', 'Category', 'Description', 'Income', 'Expense', 'Balance']);
+  header_(sheet, ['Date', 'Category', 'Description', 'Income', 'Expense',
+                  'Account', 'Type', 'Balance']);
 
-  // Running balance for every data row: =prevBalance + Income - Expense.
-  // Guarded so empty rows stay blank.
+  // Running cumulative net (col H): =prev + Income - Expense. This is a global
+  // line across all accounts; real per-account balances live on the Accounts
+  // tab. Guarded so empty rows stay blank.
   var formulas = [];
   for (var r = 2; r <= TX_LAST_ROW; r++) {
-    var prev = (r === 2) ? '0' : 'F' + (r - 1);
+    var prev = (r === 2) ? '0' : 'H' + (r - 1);
     formulas.push(['=IF(AND(D' + r + '="",E' + r + '=""),"",' +
       prev + '+N(D' + r + ')-N(E' + r + '))']);
   }
-  sheet.getRange(2, 6, formulas.length, 1).setFormulas(formulas);
+  sheet.getRange(2, 8, formulas.length, 1).setFormulas(formulas);
 
   // Formatting
   sheet.getRange('A2:A').setNumberFormat('yyyy-mm-dd');
-  sheet.getRange('D2:F').setNumberFormat(CURRENCY);
+  sheet.getRange('D2:E').setNumberFormat(CURRENCY);
+  sheet.getRange('H2:H').setNumberFormat(CURRENCY);
   sheet.setColumnWidth(3, 240);
+  sheet.setColumnWidth(6, 175);
 
-  // Category dropdown (validation) from the Categories tab.
-  applyCategoryValidation_(sheet, 'B2:B', cats);
+  // Category dropdown — include "Transfer" so imported transfer rows validate.
+  applyCategoryValidation_(sheet, 'B2:B', cats.concat(['Transfer']));
+  // Account Type dropdown (Cash / Credit).
+  applyListValidation_(sheet, 'G2:G', ['Cash', 'Credit']);
 
   // Seed a couple of example rows when empty.
   if (sheet.getRange(2, 1).getValue() === '') {
-    sheet.getRange(2, 1, 2, 5).setValues([
-      [new Date(), 'Income', 'Salary', 3200, 0],
-      [new Date(), 'Housing', 'Rent', 0, 1200]
+    sheet.getRange(2, 1, 2, 7).setValues([
+      [new Date(), 'Income', 'Salary', 3200, 0, 'Checking 3620', 'Cash'],
+      [new Date(), 'Housing', 'Rent', 0, 1200, 'Checking 3620', 'Cash']
     ]);
   }
 }
 
 function applyCategoryValidation_(sheet, a1, cats) {
-  if (!cats.length) return;
+  applyListValidation_(sheet, a1, cats);
+}
+
+function applyListValidation_(sheet, a1, list) {
+  if (!list.length) return;
   var rule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(cats, true)
+    .requireValueInList(list, true)
     .setAllowInvalid(true)
     .build();
   sheet.getRange(a1).setDataValidation(rule);
+}
+
+// ---- Accounts (opening balances -> derived current balances) ------
+// Current Balance = Opening Balance + (this account's Income) - (its Expense),
+// summed over ALL transactions INCLUDING transfers — so paying a card lowers
+// cash AND lowers card debt. Enter each Opening Balance yourself: what the
+// account held just before the first imported transaction. Credit cards carry
+// a NEGATIVE balance (debt), e.g. a card you owe $10,000 on starts at -10000.
+function buildAccounts_(ss) {
+  var sheet = getOrCreate_(ss, SHEETS.ACCT);
+  header_(sheet, ['Account', 'Type', 'Opening Balance', 'Current Balance']);
+  var tx = "'" + SHEETS.TX + "'";
+
+  for (var r = 2; r <= 60; r++) {
+    sheet.getRange(r, 4).setFormula(
+      '=IF(A' + r + '="","",N(C' + r + ')' +
+      '+SUMIF(' + tx + '!F:F,A' + r + ',' + tx + '!D:D)' +
+      '-SUMIF(' + tx + '!F:F,A' + r + ',' + tx + '!E:E))'
+    ).setNumberFormat(CURRENCY);
+  }
+  sheet.getRange('C2:D').setNumberFormat(CURRENCY);
+  applyListValidation_(sheet, 'B2:B', ['Cash', 'Credit']);
+
+  // Seed the known accounts (labels match the converter's Account column) once;
+  // user fills the Opening Balance column. Re-running setup() preserves edits.
+  if (sheet.getRange(2, 1).getValue() === '') {
+    sheet.getRange(2, 1, 8, 2).setValues([
+      ['Checking 3620', 'Cash'],
+      ['Checking 3639', 'Cash'],
+      ['Checking 6689', 'Cash'],
+      ['Savings 2991', 'Cash'],
+      ['depository Account 6602', 'Cash'],
+      ['depository Account 6367', 'Cash'],
+      ['Robinhood Credit Card', 'Credit'],
+      ['Discover it Card', 'Credit']
+    ]);
+  }
+  sheet.setColumnWidth(1, 200);
+  sheet.setColumnWidth(3, 140);
+  sheet.setColumnWidth(4, 140);
 }
 
 // ---- 3. Recurring expenses ---------------------------------------
@@ -241,17 +293,30 @@ function buildDashboard_(ss, cats) {
   sheet.getRange('A1').setValue('Finance Dashboard')
     .setFontSize(16).setFontWeight('bold');
 
-  // --- Totals block ---
+  // --- Spend totals (exclude transfers) ---
+  var noXfer = ',' + tx + '!B2:B,"<>Transfer"';
   put_(sheet, 'A3', 'All-time Income', true);
-  sheet.getRange('B3').setFormula('=SUM(' + tx + '!D2:D)').setNumberFormat(CURRENCY);
+  sheet.getRange('B3').setFormula('=SUMIFS(' + tx + '!D2:D' + noXfer + ')').setNumberFormat(CURRENCY);
   put_(sheet, 'A4', 'All-time Expense', true);
-  sheet.getRange('B4').setFormula('=SUM(' + tx + '!E2:E)').setNumberFormat(CURRENCY);
+  sheet.getRange('B4').setFormula('=SUMIFS(' + tx + '!E2:E' + noXfer + ')').setNumberFormat(CURRENCY);
   put_(sheet, 'A5', 'Net', true);
   sheet.getRange('B5').setFormula('=B3-B4').setNumberFormat(CURRENCY);
   put_(sheet, 'A6', 'Monthly recurring', true);
   sheet.getRange('B6')
     .setFormula("=SUMIF('" + SHEETS.RECUR + "'!E2:E,TRUE,'" + SHEETS.RECUR + "'!C2:C)")
     .setNumberFormat(CURRENCY);
+
+  // --- Standing balances by account group (from the Accounts tab) ---
+  var acct = "'" + SHEETS.ACCT + "'";
+  var bal = function (type) {
+    return '=SUMIF(' + acct + '!B2:B,"' + type + '",' + acct + '!D2:D)';
+  };
+  put_(sheet, 'D3', 'Cash on hand', true);
+  sheet.getRange('E3').setFormula(bal('Cash')).setNumberFormat(CURRENCY);
+  put_(sheet, 'D4', 'Credit (debt)', true);
+  sheet.getRange('E4').setFormula(bal('Credit')).setNumberFormat(CURRENCY);
+  put_(sheet, 'D5', 'Net worth (all)', true);
+  sheet.getRange('E5').setFormula('=E3+E4').setNumberFormat(CURRENCY);
 
   // --- Monthly summary (last 12 months) ---
   put_(sheet, 'A9', 'Monthly Summary', true);
@@ -266,10 +331,10 @@ function buildDashboard_(ss, cats) {
     var ms = 'A' + row;                // month start cell
     var me = 'EOMONTH(A' + row + ',0)';// month end
     sheet.getRange(row, 2).setFormula(
-      '=SUMIFS(' + tx + '!D2:D,' + tx + '!A2:A,">="&' + ms + ',' + tx + '!A2:A,"<="&' + me + ')'
+      '=SUMIFS(' + tx + '!D2:D,' + tx + '!A2:A,">="&' + ms + ',' + tx + '!A2:A,"<="&' + me + noXfer + ')'
     ).setNumberFormat(CURRENCY);
     sheet.getRange(row, 3).setFormula(
-      '=SUMIFS(' + tx + '!E2:E,' + tx + '!A2:A,">="&' + ms + ',' + tx + '!A2:A,"<="&' + me + ')'
+      '=SUMIFS(' + tx + '!E2:E,' + tx + '!A2:A,">="&' + ms + ',' + tx + '!A2:A,"<="&' + me + noXfer + ')'
     ).setNumberFormat(CURRENCY);
     sheet.getRange(row, 4).setFormula('=B' + row + '-C' + row).setNumberFormat(CURRENCY);
   }
@@ -287,10 +352,10 @@ function buildDashboard_(ss, cats) {
     var ws = 'F' + wrow;
     var we = 'F' + wrow + '+6';
     sheet.getRange(wrow, 7).setFormula(
-      '=SUMIFS(' + tx + '!D2:D,' + tx + '!A2:A,">="&' + ws + ',' + tx + '!A2:A,"<="&' + we + ')'
+      '=SUMIFS(' + tx + '!D2:D,' + tx + '!A2:A,">="&' + ws + ',' + tx + '!A2:A,"<="&' + we + noXfer + ')'
     ).setNumberFormat(CURRENCY);
     sheet.getRange(wrow, 8).setFormula(
-      '=SUMIFS(' + tx + '!E2:E,' + tx + '!A2:A,">="&' + ws + ',' + tx + '!A2:A,"<="&' + we + ')'
+      '=SUMIFS(' + tx + '!E2:E,' + tx + '!A2:A,">="&' + ws + ',' + tx + '!A2:A,"<="&' + we + noXfer + ')'
     ).setNumberFormat(CURRENCY);
     sheet.getRange(wrow, 9).setFormula('=G' + wrow + '-H' + wrow).setNumberFormat(CURRENCY);
   }

@@ -6,9 +6,11 @@ A personal finance tracker for Google Sheets. It comes in two forms:
    you can import into Google Sheets in under a minute. Live formulas
    (running balance, totals, category breakdown) come along with the import.
 2. **`apps-script/Code.gs`** — a Google Apps Script that builds the **full
-   multi-tab tracker**: Transactions, a Dashboard with **weekly & monthly**
-   summaries, **Recurring** monthly expenses, savings **Goals** (vacations,
-   etc.), and a **Categories** config tab that drives dropdowns and budgets.
+   multi-tab tracker**: Transactions, an **Accounts** tab that turns opening
+   balances into live per-account balances, a Dashboard with **weekly & monthly**
+   summaries plus **Cash / Credit / Net-worth** standing totals, **Recurring**
+   monthly expenses, savings **Goals** (vacations, etc.), and a **Categories**
+   config tab that drives dropdowns and budgets.
 
 Use the CSV for an instant ledger, then run the Apps Script when you want the
 full dashboards and extra tabs.
@@ -79,8 +81,9 @@ refreshes headers, formulas and formatting.
 
 | Tab | What it does |
 |-----|--------------|
-| **Transactions** | Ledger with category dropdown, currency formatting and a guarded running-balance formula. |
-| **Dashboard** | All-time totals, **last 12 months** and **last 12 weeks** income/expense/net summaries, and category spend-vs-budget for the current month (overspend highlighted). Plus three charts: **cashflow over time**, **category spend pie**, and **goals progress**. |
+| **Transactions** | Ledger with category dropdown, **Account** and **Type** (Cash/Credit) columns, currency formatting and a guarded running-cumulative-net formula. Transfers between your own accounts carry the category **`Transfer`** so they move balances without distorting spend totals. |
+| **Accounts** | One row per account (pre-seeded). Enter each **Opening Balance** — what it held before your first imported transaction; **credit cards are negative** (e.g. `-10000`). The **Current Balance** then derives automatically as *Opening + that account's income − expenses* (transfers included). |
+| **Dashboard** | Three standing balances — **Cash on hand**, **Credit (debt)** and **Net worth (all)** — from the Accounts tab; all-time income/expense/net and **last 12 months / 12 weeks** summaries (transfers excluded); category spend-vs-budget for the current month (overspend highlighted). Plus three charts: **cashflow over time**, **category spend pie**, and **goals progress**. |
 | **Recurring** | Monthly recurring bills (name, category, amount, due day, active checkbox) with an annual projection and monthly/annual totals. |
 | **Goals** | Savings/earnings goals (e.g. vacations): target amount & date, saved so far, monthly contribution, with computed remaining, % complete, months left and an on-track flag. |
 | **Categories** | Edit this list to change the dropdown options and per-category monthly budgets used by the Dashboard. |
@@ -103,18 +106,22 @@ finance-tracker/
 ## Importing an Everlance export
 
 `scripts/convert_everlance.py` converts an [Everlance](https://everlance.com)
-CSV export into the tracker's `Date | Category | Description | Income | Expense`
-layout. It:
+CSV export into the tracker's
+`Date | Category | Description | Income | Expense | Account | Type` layout. It:
 
 - splits the signed `Amount` into Income/Expense;
-- **drops internal account-to-account transfers** — masked-account moves,
-  self-Zelle/Cash App, Capital One 360 savings/checking shuffles, and credit-card
-  payments — which would otherwise inflate both totals. Card payments are dropped
-  on **both** sides: the money leaving checking *and* the matching "payment
-  received" entry on the card account. This includes payments labelled with only
-  the issuer name (e.g. a "Robinhood" debit on checking paying the Robinhood
-  Credit Card — see `OWN_CARD_ISSUERS`). The purchases you actually made **on**
-  the card are kept as expenses (so spending is never lost, only double-counting);
+- **tags each row with its Account and Type** — the bank account name (e.g.
+  `Checking 3620`, `Robinhood Credit Card`) and whether it's `Cash` or `Credit`,
+  so the **Accounts** tab can derive per-account balances;
+- **keeps internal transfers but labels them `Transfer`** — masked-account moves,
+  self-Zelle/Cash App, Capital One 360 shuffles, and credit-card payments (BOTH
+  legs: the money leaving checking *and* the matching "payment received" on the
+  card, including payments labelled with only the issuer name — e.g. a "Robinhood"
+  debit on checking paying the Robinhood Credit Card, see `OWN_CARD_ISSUERS`).
+  These are needed so paying a card lowers cash **and** lowers card debt, but the
+  Dashboard excludes the `Transfer` category from income/expense/spend totals so
+  nothing is double-counted. Purchases made **on** a card stay as ordinary
+  expenses;
 - **removes exact-duplicate transactions** — if an account was synced twice, the
   same charge appears 2–3× with an identical bank reference; each real
   transaction is counted once (keyed on amount + date + merchant + bank
@@ -131,9 +138,18 @@ To classify more merchants, add `('KEYWORD', 'Category')` rows to
 python3 scripts/convert_everlance.py everlance_export.csv transactions.csv
 ```
 
-Then import `transactions.csv` into the **Transactions** tab via
-**File ▸ Import ▸ Upload ▸ Append to current sheet**, and fill the Balance
-formula (column F) down over the new rows.
+Then, in the multi-tab tracker:
+
+1. Run **Finance ▸ Rebuild tracker** once so the Transactions tab has the
+   `Account`/`Type`/`Balance` columns and the **Accounts** tab exists.
+2. Select cell **A1** of the **Transactions** tab, then **File ▸ Import ▸
+   Upload**, choose `transactions.csv`, and pick **"Replace data at selected
+   cell"** (separator: comma; keep *Convert text to numbers/dates* ticked). This
+   fills columns A–G; the `Balance` formula in column H recomputes on its own.
+3. On the **Accounts** tab, fill each **Opening Balance** (what the account held
+   before the first imported transaction; **credit cards negative**). The
+   **Current Balance** and the Dashboard's Cash / Credit / Net-worth totals
+   update automatically.
 
 ## Roadmap (ideas for v2)
 

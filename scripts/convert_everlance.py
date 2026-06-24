@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
 Convert an Everlance CSV export into the Finance Tracker's Transactions
-layout: Date | Category | Description | Income | Expense.
+layout: Date | Category | Description | Income | Expense | Account | Type.
 
 - Splits Everlance's single signed Amount into Income / Expense.
-- Drops internal account-to-account transfers (money moved between your
-  own accounts), which otherwise inflate both income and expense. This
-  includes BOTH legs of a credit-card payment: the money leaving checking
-  AND the matching "payment received" entry on the card account. The real
-  expenses are the individual purchases ON the card, which are kept. Card
-  payments labelled with only the issuer name (e.g. a "Robinhood" debit on
-  checking that pays the Robinhood Credit Card) are dropped too.
+- Tags each row with its Account (e.g. "Checking 3620", "Robinhood Credit Card")
+  and Type (Cash or Credit) so the tracker can derive per-account balances.
+- Keeps internal account-to-account transfers (money moved between your own
+  accounts) but labels them with the category "Transfer". They are needed for
+  balance tracking (paying a card lowers cash AND lowers card debt) but are
+  excluded from spend analytics by the Dashboard. This includes BOTH legs of a
+  credit-card payment and payments labelled with only the issuer name (e.g. a
+  "Robinhood" debit on checking that pays the Robinhood Credit Card). The
+  individual purchases ON a card stay as ordinary expenses.
 - Removes exact-duplicate transactions: when an account is synced twice, the
   same charge appears 2-3x with an identical bank reference. Each real
   transaction is counted once.
@@ -200,7 +202,7 @@ def convert(raw):
     rows = list(csv.reader(io.StringIO(raw)))
     hi = next(i for i,r in enumerate(rows)
               if r[:4]==['Amount','Date','Merchant','Category'])
-    out=[['Date','Category','Description','Income','Expense']]
+    out=[['Date','Category','Description','Income','Expense','Account','Type']]
     stats={'kept':0,'transfers':0,'dupes':0,'income':0.0,'expense':0.0}
     # Drop exact-duplicate transactions first. When an account is synced twice,
     # the same charge appears 2-3x with an identical bank reference; the key is
@@ -222,17 +224,23 @@ def convert(raw):
         seen.add(key)
         ecat=r[3].strip() or 'Uncategorized'
         bankdesc=bd; account=ac
+        # Clean account label ("Checking 3620 - 3620" -> "Checking 3620") and
+        # classify Cash vs Credit (a credit-card account contains "Card").
+        acct = account.split(' - ')[0].strip()
+        atype = 'Credit' if 'CARD' in account.upper() else 'Cash'
         if is_transfer(merch+' '+bankdesc) or \
            is_card_payment(account, amt, merch, bankdesc, ecat):
+            # Kept (not dropped) so account balances move correctly, but flagged
+            # so the Dashboard's income/expense/category analytics skip it.
+            cat='Transfer'
             stats['transfers']+=1
-            continue
-        is_income = amt>0
-        cat=map_category(ecat, merch, is_income)
+        else:
+            cat=map_category(ecat, merch, amt>0)
+            if amt>0: stats['income']+=round(amt,2)
+            else:     stats['expense']+=round(-amt,2)
         inc = round(amt,2) if amt>0 else ''
         exp = round(-amt,2) if amt<0 else ''
-        if inc: stats['income']+=inc
-        if exp: stats['expense']+=exp
-        out.append([date,cat,merch,inc,exp]); stats['kept']+=1
+        out.append([date,cat,merch,inc,exp,acct,atype]); stats['kept']+=1
     out[1:]=sorted(out[1:], key=lambda x:x[0])   # oldest -> newest
     return out, stats
 
@@ -241,7 +249,7 @@ if __name__=='__main__':
     raw=open(inp,encoding='utf-8',errors='replace').read()
     out,st=convert(raw)
     csv.writer(open(outp,'w',newline='')).writerows(out)
-    print(f"kept {st['kept']} rows, removed {st['transfers']} transfers, "
-          f"{st['dupes']} duplicates")
+    print(f"kept {st['kept']} rows ({st['transfers']} transfers), "
+          f"removed {st['dupes']} duplicates")
     print(f"income ${st['income']:,.2f}  expense ${st['expense']:,.2f}  "
-          f"net ${st['income']-st['expense']:,.2f}")
+          f"net ${st['income']-st['expense']:,.2f}  (transfers excluded)")
