@@ -17,11 +17,6 @@ A personal finance tracker for Google Sheets. It comes in two forms:
 Use the CSV for an instant ledger, then run the Apps Script when you want the
 full dashboards and extra tabs.
 
-> **Live Sheet:** a ready-to-use copy has been created in Google Drive —
-> [**Finance Tracker 2026**](https://docs.google.com/spreadsheets/d/1mQNsuWwPa6qXxPC8RyrkTNt5nX_E1BTq42tPbQhi7PU/edit)
-> (owner: jamilwaliyy@gmail.com). Open it to start immediately, or follow the
-> import steps below to make your own.
-
 ---
 
 ## Option A — Use the CSV template (fastest)
@@ -119,11 +114,12 @@ rewrite (Everlance is profile #1).
 
 1. Run **Finance ▸ Rebuild tracker** so all tabs exist — including the new
    **Settings** tab.
-2. Open the **Settings** tab and check **Name tokens (ALL must match)** — it's
-   pre-seeded with `JAMIL` and `ALIY` (the `ALIY` stem matches both *Aliy* and
-   *Aliyy*, so your name reads correctly however the bank spells it). These let
-   the importer spot *your* self-Zelle / Cash App transfers. Everything else is
-   pre-seeded too; edit a row only when your accounts change (see below).
+2. Open the **Settings** tab and fill in **Name tokens (ALL must match)** with
+   distinctive parts of *your* name (use stems — e.g. `SMIT` matches both *Smith*
+   and *Smithe* — so it reads correctly however the bank spells it). These let
+   the importer spot *your* self-Zelle / Cash App transfers. The other rows start
+   blank or with generic payment-rail keywords; add your own banks, sub-accounts
+   and cards as your accounts require (see below).
 
 **Each import (as often as you like — daily is fine):**
 
@@ -142,13 +138,13 @@ rewrite (Everlance is profile #1).
 
 - **splits the signed `Amount`** into Income/Expense;
 - **tags each row with its Account and Type** — the bank account name (e.g.
-  `Checking 3620`, `Robinhood Credit Card`) and whether it's `Cash` or `Credit`,
+  `Checking 1234`, `Visa Credit Card`) and whether it's `Cash` or `Credit`,
   so the **Accounts** tab can derive per-account balances;
 - **keeps internal transfers but labels them `Transfer`** — masked-account moves,
   self-Zelle/Cash App, sub-account shuffles, and credit-card payments (BOTH legs:
   the money leaving checking *and* the matching "payment received" on the card,
-  including payments labelled with only the issuer name — e.g. a "Robinhood" debit
-  on checking paying the Robinhood Credit Card). These move balances (paying a
+  including payments labelled with only the issuer name — e.g. an issuer-named
+  debit on checking paying that issuer's credit card). These move balances (paying a
   card lowers cash **and** card debt) but the Dashboard excludes the `Transfer`
   category from income/expense/spend totals, so nothing is double-counted.
   Purchases made **on** a card stay as ordinary expenses;

@@ -153,8 +153,8 @@ function buildTransactions_(ss, cats) {
   // import clears them (the tab is managed by the importer).
   if (sheet.getRange(2, 1).getValue() === '') {
     sheet.getRange(2, 1, 2, 7).setValues([
-      [new Date(), 'Income', 'Salary', 3200, 0, 'Checking 3620', 'Cash'],
-      [new Date(), 'Housing', 'Rent', 0, 1200, 'Checking 3620', 'Cash']
+      [new Date(), 'Income', 'Salary', 3200, 0, 'Checking 1234', 'Cash'],
+      [new Date(), 'Housing', 'Rent', 0, 1200, 'Checking 1234', 'Cash']
     ]);
   }
 }
@@ -196,15 +196,10 @@ function buildAccounts_(ss) {
   // Seed the known accounts (labels match the converter's Account column) once;
   // user fills the Opening Balance column. Re-running setup() preserves edits.
   if (sheet.getRange(2, 1).getValue() === '') {
-    sheet.getRange(2, 1, 8, 2).setValues([
-      ['Checking 3620', 'Cash'],
-      ['Checking 3639', 'Cash'],
-      ['Checking 6689', 'Cash'],
-      ['Savings 2991', 'Cash'],
-      ['depository Account 6602', 'Cash'],
-      ['depository Account 6367', 'Cash'],
-      ['Robinhood Credit Card', 'Credit'],
-      ['Discover it Card', 'Credit']
+    sheet.getRange(2, 1, 3, 2).setValues([
+      ['Checking 1234', 'Cash'],
+      ['Savings 5678', 'Cash'],
+      ['Credit Card', 'Credit']
     ]);
   }
   sheet.setColumnWidth(1, 200);
@@ -486,25 +481,25 @@ function buildCharts_(ss, cats) {
 // trims on read. The seeds below are institution/keyword lists — they
 // are NOT your name. Fill "Name tokens" yourself (kept out of code).
 var SETTINGS_ROWS = [
-  ['Name tokens (ALL must match)', ['JAMIL', 'ALIY'],
+  ['Name tokens (ALL must match)', [],
     'Distinctive parts of YOUR name — ALL must appear for a row to count as ' +
     'money moved between your own accounts (self Zelle/Cash App). Use stems: ' +
-    'ALIY matches both Aliy and Aliyy. Add ABDAL if your bank shows it. Blank = skip name matching.'],
+    'e.g. SMIT matches both Smith and Smithe. Blank = skip name matching.'],
   ['Self P2P channels', ['ZELLE', 'PERSON-TO-PERSON', 'CASH APP', 'RTP'],
     'Instant-payment rails that, with your name, mean a self-transfer.'],
-  ['Own banks', ['CAPITAL ONE'],
-    'Your other linked banks (movements to/from them are transfers).'],
+  ['Own banks', [],
+    'Your other linked banks (movements to/from them are transfers). e.g. CHASE.'],
   ['Own bank rails', ['RTP', 'PERSON-TO-PERSON', 'INTERNET PAYMENT', 'ACCTVERIFY', 'TRANSFER'],
     'Rails that signal an own-bank movement.'],
-  ['Own bank exclude', ['ARENA'],
-    'Same-named merchants to NOT treat as your bank (e.g. a venue).'],
-  ['Own sub-accounts', ['360 PERFORMANCE SAVINGS', '360 CHECKING', '360 SAVINGS'],
+  ['Own bank exclude', [],
+    'Same-named merchants to NOT treat as your bank (e.g. a venue using the bank name).'],
+  ['Own sub-accounts', [],
     'Your savings/checking sub-accounts (shuffles between them are transfers).'],
-  ['Own cards (rail-paid)', ['DISCOVER'],
-    'Cards you pay where the bank labels the outflow with a payment rail.'],
+  ['Own cards (rail-paid)', [],
+    'Cards you pay where the bank labels the outflow with a payment rail. e.g. VISA.'],
   ['Card pay rails', ['INTERNET PAYMENT', 'E-PAYMENT', 'EPAYMENT', 'ONLINE PAYMENT', 'AUTOPAY', 'BILL PAYMENT'],
     'Rails that indicate a credit-card payment.'],
-  ['Own card issuers (name-only)', ['ROBINHOOD'],
+  ['Own card issuers (name-only)', [],
     'Cards paid by an issuer-name-only outflow from checking (no rail in the text).']
 ];
 
@@ -548,15 +543,15 @@ function buildSettings_(ss) {
 // to DEFAULT_CFG. Name tokens default to [] so your name is never in code.
 function readSettings_(ss) {
   var cfg = {
-    nameTokens: ['JAMIL', 'ALIY'],
+    nameTokens: [],
     selfChannels: ['ZELLE', 'PERSON-TO-PERSON', 'CASH APP', 'RTP'],
-    ownBanks: ['CAPITAL ONE'],
+    ownBanks: [],
     ownBankRails: ['RTP', 'PERSON-TO-PERSON', 'INTERNET PAYMENT', 'ACCTVERIFY', 'TRANSFER'],
-    ownBankExclude: ['ARENA'],
-    own360: ['360 PERFORMANCE SAVINGS', '360 CHECKING', '360 SAVINGS'],
-    ownCards: ['DISCOVER'],
+    ownBankExclude: [],
+    own360: [],
+    ownCards: [],
     cardPayRails: ['INTERNET PAYMENT', 'E-PAYMENT', 'EPAYMENT', 'ONLINE PAYMENT', 'AUTOPAY', 'BILL PAYMENT'],
-    ownCardIssuers: ['ROBINHOOD']
+    ownCardIssuers: []
   };
   var sheet = ss.getSheetByName(SHEETS.SETTINGS);
   if (!sheet || sheet.getLastRow() < 2 || sheet.getLastColumn() < 2) return cfg;
