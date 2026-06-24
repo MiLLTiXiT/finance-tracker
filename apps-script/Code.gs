@@ -149,6 +149,17 @@ function buildTransactions_(ss, cats) {
   // Account Type dropdown (Cash / Credit).
   applyListValidation_(sheet, 'G2:G', ['Cash', 'Credit']);
 
+  // Basic filter on the header so you can sort or filter the ledger by hand —
+  // e.g. set the Account column to a single account (like "Checking 3620") to
+  // review just those rows, then fix any Category yourself (set it to "Transfer"
+  // to pull a row out of income/expense totals). Re-created idempotently.
+  // Note: FILTERING (hiding rows) leaves the running Balance intact; SORTING
+  // physically reorders rows, so the global Balance column reflows — re-sort by
+  // Date (or run Finance ▸ Rebuild) to restore it. Your edits are unaffected.
+  var existingFilter = sheet.getFilter();
+  if (existingFilter) existingFilter.remove();
+  sheet.getRange(1, 1, TX_LAST_ROW, 9).createFilter();
+
   // Seed a couple of example rows when empty. They carry no Ref, so the first
   // import clears them (the tab is managed by the importer).
   if (sheet.getRange(2, 1).getValue() === '') {
@@ -868,10 +879,10 @@ function writeTransactions_(ss, rows) {
     added++;
   }
 
-  // Reconcile internal transfers across the WHOLE merged ledger (not just this
-  // file), so a transfer whose two legs arrived in separate imports — or rows
-  // imported before this fix — also get paired and corrected on re-import.
-  pairInternalTransfers_(keep);
+  // NOTE: auto-pairing runs only on a file's brand-new rows (in parseEverlance_),
+  // never on rows already in the ledger. Once a transaction is in the sheet, your
+  // hand edits to its Category are sacred — re-importing keeps them untouched. So
+  // if you label 3620's rows yourself, your labels persist across every re-import.
 
   // Date-sort the merged ledger (oldest first).
   keep.sort(function (a, b) {

@@ -78,7 +78,7 @@ refreshes headers, formulas and formatting.
 
 | Tab | What it does |
 |-----|--------------|
-| **Transactions** | Ledger with category dropdown, **Account** and **Type** (Cash/Credit) columns, currency formatting and a guarded running-cumulative-net formula. Transfers between your own accounts carry the category **`Transfer`** so they move balances without distorting spend totals. |
+| **Transactions** | Ledger with category dropdown, **Account** and **Type** (Cash/Credit) columns, currency formatting and a guarded running-cumulative-net formula. Transfers between your own accounts carry the category **`Transfer`** so they move balances without distorting spend totals. A **filter** sits on the header — filter the **Account** column to one account (e.g. `Checking 3620`) to review it alone, and fix any row's **Category** by hand (the dropdown includes `Transfer`). Hand edits stick: re-importing never overwrites a row already in the sheet. |
 | **Accounts** | One row per account (pre-seeded). Enter each **Opening Balance** — what it held before your first imported transaction; **credit cards are negative** (e.g. `-10000`). The **Current Balance** then derives automatically as *Opening + that account's income − expenses* (transfers included). |
 | **Dashboard** | Three standing balances — **Cash on hand**, **Credit (debt)** and **Net worth (all)** — from the Accounts tab; all-time income/expense/net and **last 12 months / 12 weeks** summaries (transfers excluded); category spend-vs-budget for the current month (overspend highlighted). Plus three charts: **cashflow over time**, **category spend pie**, and **goals progress**. ⚠️ Until you set Opening Balances (below), the cash figure is labelled **"Net change since import"** — it's the change since your first import, *not* your real cash. |
 | **Recurring** | Monthly recurring bills (name, category, amount, due day, active checkbox) with an annual projection and monthly/annual totals. |
@@ -167,6 +167,30 @@ rewrite (Everlance is profile #1).
   a check you *deposit* is Income (Everlance tags both "Check", so the amount's
   sign decides), and any **Lender** named on the Settings tab is treated as loan
   Income on the way in and a repayment Expense on the way out.
+
+### Fixing a transaction's classification by hand
+
+Auto-detection is only a **first guess** — you always have the final say, and the
+sheet is built so your corrections are permanent:
+
+1. On the **Transactions** tab, click the filter on the **Account** header and
+   tick a single account (e.g. `Checking 3620`) to see only its rows.
+2. For each row, set the **Category** (column B) with the dropdown:
+   - **`Transfer`** — money moved between your own accounts (or a card payment).
+     Transfers still move account balances but are **excluded** from income,
+     expense and spend totals, so they don't inflate anything.
+   - any spending category (Groceries, Transport, …) for a real **expense**;
+   - **`Income`** for real income.
+   The Income/Expense **amount** stays in its column (D or E) — changing the
+   Category is all that's needed to fix how a row is counted.
+3. That's it. The next import **keeps your edits**: rows already in the sheet are
+   matched by their hidden `Ref` and never re-classified, so you only ever label
+   a transaction once.
+
+Tip: filtering (hiding rows) keeps the running **Balance** column correct;
+*sorting* physically reorders rows so that global column reflows — re-sort by
+**Date**, or run **Finance ▸ Rebuild tracker**, to restore it. Your data and
+labels are never affected either way.
 
 ### Importing again — daily, weekly, whenever
 
