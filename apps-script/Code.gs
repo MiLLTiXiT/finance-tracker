@@ -4,7 +4,9 @@
  * Paste this into a Google Sheet (Extensions ▸ Apps Script), then run
  * `setup()` once. It (re)builds all tabs idempotently:
  *
- *   1. Transactions      — ledger with running balance + dropdowns
+ *   1. Clean Transactions — curated ledger with running balance + dropdowns
+ *      (the SheetLink bank-feed add-on writes its RAW feed to a separate tab
+ *      named "Transactions"; Sync from SheetLink cleans that into this ledger)
  *   2. Accounts          — opening balances -> live per-account balances
  *   3. Recurring         — monthly recurring expenses + annual projection
  *   4. Goals             — savings/earnings planning (vacations, etc.)
@@ -25,7 +27,7 @@
 
 // ---- Config -------------------------------------------------------
 var SHEETS = {
-  TX: 'Transactions',
+  TX: 'Clean Transactions',
   ACCT: 'Accounts',
   DASH: 'Dashboard',
   RECUR: 'Recurring',
@@ -559,10 +561,12 @@ var SETTINGS_ROWS = [
     'Names of lenders you borrow from (e.g. a cash-advance/loan provider). A ' +
     'deposit from one is treated as loan Income; a payment to one as an Expense ' +
     '(category Other) — so repayments are not mis-filed under Housing, etc.'],
-  ['SheetLink transactions tab', ['SheetLink'],
+  ['SheetLink transactions tab', ['Transactions'],
     'Exact NAME of the tab the SheetLink bank-feed add-on writes transactions to. ' +
-    'If left wrong, "Sync from SheetLink" auto-detects the tab by its headers. ' +
-    'Case-sensitive; do NOT name it "Transactions" (that is our ledger).'],
+    'SheetLink always writes a tab named "Transactions" (it lets you pick the file, ' +
+    'not the tab name), so that is the raw feed. Our curated ledger lives on the ' +
+    'separate "Clean Transactions" tab; "Sync from SheetLink" reads this feed and ' +
+    'writes the cleaned rows there. Case-sensitive.'],
   ['SheetLink accounts tab', ['SheetLink Accounts'],
     'Exact NAME of the SheetLink tab that lists account balances (used to fill ' +
     'the Bank Balance column on Accounts). Leave blank to skip balance sync.'],
@@ -575,7 +579,7 @@ var SETTINGS_ROWS = [
 // Single-value (scalar) Settings rows read raw (case preserved), separate from
 // the uppercased keyword lists above. Used for the SheetLink integration.
 var SETTINGS_SCALARS = [
-  ['SheetLink transactions tab', 'SheetLink'],
+  ['SheetLink transactions tab', 'Transactions'],
   ['SheetLink accounts tab', 'SheetLink Accounts'],
   ['SheetLink amount sign', 'out=positive']
 ];
@@ -1100,7 +1104,7 @@ function rawSetting_(ss, label) {
 function readSheetLinkCfg_(ss) {
   var sign = rawSetting_(ss, 'SheetLink amount sign').toUpperCase();
   return {
-    txTab: rawSetting_(ss, 'SheetLink transactions tab') || 'SheetLink',
+    txTab: rawSetting_(ss, 'SheetLink transactions tab') || 'Transactions',
     acctTab: rawSetting_(ss, 'SheetLink accounts tab'),
     // Default Plaid convention out=positive; only an explicit "in=positive" flips.
     outPositive: sign.indexOf('IN=POS') === -1
@@ -1218,7 +1222,7 @@ function syncBalances_(ss, slCfg) {
 // and the running Balance (col I) is recomputed. Returns {added, skipped, total}.
 function writeTransactions_(ss, rows) {
   var tx = ss.getSheetByName(SHEETS.TX);
-  if (!tx) throw new Error('Transactions tab not found — run "Rebuild tracker" first.');
+  if (!tx) throw new Error('"Clean Transactions" tab not found — run "Rebuild tracker" first.');
 
   // Read the whole potential data region (cols A..H). Reading cols 1-8 avoids
   // the col-I balance formulas, so getLastRow's formula-extent is irrelevant.
@@ -1355,7 +1359,7 @@ var IMPORT_DIALOG_HTML_ =
   '#status{margin-top:14px;white-space:pre-wrap;line-height:1.4}' +
   '</style></head><body>' +
   '<p>Choose your CSV export (Everlance supported today). It is cleaned and ' +
-  'merged into the <b>Transactions</b> tab — only transactions not already ' +
+  'merged into the <b>Clean Transactions</b> tab — only transactions not already ' +
   'in the sheet are added, so you can import as often as you like.</p>' +
   '<input type="file" id="file" accept=".csv,text/csv"><br><br>' +
   '<button id="btn" onclick="go()">Import</button>' +

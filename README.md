@@ -6,7 +6,7 @@ A personal finance tracker for Google Sheets. It comes in two forms:
    you can import into Google Sheets in under a minute. Live formulas
    (running balance, totals, category breakdown) come along with the import.
 2. **`apps-script/Code.gs`** — a Google Apps Script that builds the **full
-   multi-tab tracker**: Transactions, an **Accounts** tab that turns opening
+   multi-tab tracker**: Clean Transactions, an **Accounts** tab that turns opening
    balances into live per-account balances, a Dashboard with **weekly & monthly**
    summaries plus **Cash / Credit / Net-worth** standing totals, **Recurring**
    monthly expenses, savings **Goals** (vacations, etc.), a **Categories** config
@@ -78,7 +78,7 @@ refreshes headers, formulas and formatting.
 
 | Tab | What it does |
 |-----|--------------|
-| **Transactions** | Ledger with category dropdown, **Account** and **Type** (Cash/Credit) columns, currency formatting and a guarded running-cumulative-net formula. Transfers between your own accounts carry the category **`Transfer`** so they move balances without distorting spend totals. A **filter** sits on the header — filter the **Account** column to one account (e.g. `Checking 3620`) to review it alone, and fix any row's **Category** by hand (the dropdown includes `Transfer`). Hand edits stick: re-importing never overwrites a row already in the sheet. |
+| **Clean Transactions** | Your curated ledger, with category dropdown, **Account** and **Type** (Cash/Credit) columns, currency formatting and a guarded running-cumulative-net formula. Transfers between your own accounts carry the category **`Transfer`** so they move balances without distorting spend totals. A **filter** sits on the header — filter the **Account** column to one account (e.g. `Checking 3620`) to review it alone, and fix any row's **Category** by hand (the dropdown includes `Transfer`). Hand edits stick: re-importing never overwrites a row already in the sheet. *(The SheetLink add-on writes its **raw** feed to a separate tab named **`Transactions`**; Sync from SheetLink cleans that into this ledger — see below.)* |
 | **Accounts** | One row per account (pre-seeded). Enter each **Opening Balance** — what it held before your first imported transaction; **credit cards are negative** (e.g. `-10000`). The **Current Balance** then derives automatically as *Opening + that account's income − expenses* (transfers included). When using the SheetLink feed, a **Bank Balance** column shows the real balance from the bank and **Δ Bank − Computed** flags any account that doesn't reconcile (missing transactions). |
 | **Dashboard** | Three standing balances — **Cash on hand**, **Credit (debt)** and **Net worth (all)** — from the Accounts tab; all-time income/expense/net and **last 12 months / 12 weeks** summaries (transfers excluded); category spend-vs-budget for the current month (overspend highlighted). Plus three charts: **cashflow over time**, **category spend pie**, and **goals progress**. ⚠️ Until you set Opening Balances (below), the cash figure is labelled **"Net change since import"** — it's the change since your first import, *not* your real cash. |
 | **Recurring** | Monthly recurring bills (name, category, amount, due day, active checkbox) with an annual projection and monthly/annual totals. |
@@ -111,21 +111,30 @@ it pulls *every* account automatically, you get **both legs of every transfer** 
 nothing is skipped, which is what keeps per-account balances honest (no more
 phantom surpluses from a missing month).
 
+> **Two tabs, by design.** SheetLink always writes its feed to a tab it names
+> **`Transactions`** (you choose the *file* it writes into, not the tab name). So
+> point SheetLink at **this** spreadsheet and let that be the **raw feed**. Your
+> curated ledger lives on a **separate** tab called **`Clean Transactions`** that the
+> Rebuild step creates — that's where Sync from SheetLink writes the cleaned rows,
+> and what the Dashboard/Accounts read. Don't rename either tab.
+
 **One-time setup:**
 
-1. Install **SheetLink** from the Google Workspace Marketplace, open it in this
-   spreadsheet, and connect your accounts (Capital One, Truist, the cards, etc.).
-   Let it write its transactions tab (and, ideally, its balances tab).
-2. Run **Finance ▸ Rebuild tracker** so the **Settings** and **Accounts** tabs
-   carry the new fields.
-3. On the **Settings** tab, set **SheetLink transactions tab** and **SheetLink
-   accounts tab** to the exact tab names SheetLink created. *(If you're not sure,
-   leave them — the sync auto-detects the feed tab by its column headers.)*
+1. Install **SheetLink** from the Google Workspace Marketplace, point it at **this
+   spreadsheet** (an "existing template"), and connect your accounts (Capital One,
+   Truist, the cards, etc.). Let it write its **`Transactions`** tab (and, ideally,
+   its balances tab).
+2. Run **Finance ▸ Rebuild tracker** — this creates the **`Clean Transactions`**
+   ledger and makes the **Settings** and **Accounts** tabs carry the feed fields.
+   The Settings default **SheetLink transactions tab = `Transactions`** already
+   points at SheetLink's feed, so there's usually nothing to change.
+3. *(Only if your balances tab has a non-default name)* set **SheetLink accounts
+   tab** on the **Settings** tab to the exact name SheetLink created.
 
 **Each sync (or let it run automatically):**
 
-4. **Finance ▸ Sync from SheetLink** — the feed is normalized into the
-   **Transactions** ledger: amounts split into Income/Expense, accounts/types set,
+4. **Finance ▸ Sync from SheetLink** — the raw **`Transactions`** feed is normalized
+   into the **`Clean Transactions`** ledger: amounts split into Income/Expense, accounts/types set,
    transfers between your own accounts tagged `Transfer`, categories mapped, and
    each row de-duped by its stable bank `transaction_id`. Your hand-labels are
    preserved. The summary reports what was added.
@@ -149,7 +158,7 @@ phantom surpluses from a missing month).
 You can also import a CSV manually — useful as a fallback or before you set up the
 feed. The importer is **part of the Apps Script** — no Python, no command line. You
 pick a CSV from a pop-up and it's cleaned and written straight into the
-**Transactions** tab. It understands the [Everlance](https://everlance.com) export
+**Clean Transactions** tab. It understands the [Everlance](https://everlance.com) export
 format today; it's built as a small registry of **format profiles** (Everlance and
 SheetLink ship in the box), so more banks can be added later without a rewrite.
 
@@ -216,7 +225,7 @@ SheetLink ship in the box), so more banks can be added later without a rewrite.
 Auto-detection is only a **first guess** — you always have the final say, and the
 sheet is built so your corrections are permanent:
 
-1. On the **Transactions** tab, click the filter on the **Account** header and
+1. On the **Clean Transactions** tab, click the filter on the **Account** header and
    tick a single account (e.g. `Checking 3620`) to see only its rows.
 2. For each row, set the **Category** (column B) with the dropdown:
    - **`Transfer`** — money moved between your own accounts (or a card payment).
@@ -269,7 +278,7 @@ put.
 
 A standalone Python version, `scripts/convert_everlance.py`, does the same
 conversion outside the sheet (`python3 scripts/convert_everlance.py export.csv
-out.csv`, then import the result at `Transactions!A1`). The in-sheet importer is
+out.csv`, then import the result at `Clean Transactions!A1`). The in-sheet importer is
 the recommended path; the script is kept as a reference and for batch/CLI use.
 
 ## Roadmap (ideas for v2)
