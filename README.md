@@ -79,12 +79,12 @@ refreshes headers, formulas and formatting.
 | Tab | What it does |
 |-----|--------------|
 | **Transactions** | Ledger with category dropdown, **Account** and **Type** (Cash/Credit) columns, currency formatting and a guarded running-cumulative-net formula. Transfers between your own accounts carry the category **`Transfer`** so they move balances without distorting spend totals. A **filter** sits on the header — filter the **Account** column to one account (e.g. `Checking 3620`) to review it alone, and fix any row's **Category** by hand (the dropdown includes `Transfer`). Hand edits stick: re-importing never overwrites a row already in the sheet. |
-| **Accounts** | One row per account (pre-seeded). Enter each **Opening Balance** — what it held before your first imported transaction; **credit cards are negative** (e.g. `-10000`). The **Current Balance** then derives automatically as *Opening + that account's income − expenses* (transfers included). |
+| **Accounts** | One row per account (pre-seeded). Enter each **Opening Balance** — what it held before your first imported transaction; **credit cards are negative** (e.g. `-10000`). The **Current Balance** then derives automatically as *Opening + that account's income − expenses* (transfers included). When using the SheetLink feed, a **Bank Balance** column shows the real balance from the bank and **Δ Bank − Computed** flags any account that doesn't reconcile (missing transactions). |
 | **Dashboard** | Three standing balances — **Cash on hand**, **Credit (debt)** and **Net worth (all)** — from the Accounts tab; all-time income/expense/net and **last 12 months / 12 weeks** summaries (transfers excluded); category spend-vs-budget for the current month (overspend highlighted). Plus three charts: **cashflow over time**, **category spend pie**, and **goals progress**. ⚠️ Until you set Opening Balances (below), the cash figure is labelled **"Net change since import"** — it's the change since your first import, *not* your real cash. |
 | **Recurring** | Monthly recurring bills (name, category, amount, due day, active checkbox) with an annual projection and monthly/annual totals. |
 | **Goals** | Savings/earnings goals (e.g. vacations): target amount & date, saved so far, monthly contribution, with computed remaining, % complete, months left and an on-track flag. |
 | **Categories** | Edit this list to change the dropdown options and per-category monthly budgets used by the Dashboard. |
-| **Settings** | Personal lists the CSV importer uses to recognise transfers between your own accounts (name, banks, cards). Edit a row to add an account — no code changes. |
+| **Settings** | Personal lists the importer uses to recognise transfers between your own accounts (name, banks, cards), plus the **SheetLink** feed settings (which tab to read and the amount-sign toggle). Edit a row to add an account — no code changes. |
 
 ---
 
@@ -101,14 +101,57 @@ finance-tracker/
     └── Code.gs                        # builds all tabs + the built-in CSV importer
 ```
 
-## Importing transactions (built into the sheet)
+## Automatic bank feed (SheetLink) — recommended
 
-The importer is **part of the Apps Script** — no Python, no command line, no
-outside apps. You pick a CSV from a pop-up and it's cleaned and written straight
-into the **Transactions** tab. Today it understands the
-[Everlance](https://everlance.com) export format; it's built as a small registry
-of **format profiles**, so more banks/exports can be added later without a
-rewrite (Everlance is profile #1).
+The simplest, most reliable way to keep the tracker current is an **automatic
+bank feed**. [SheetLink](https://sheetlink.app) is a Google Sheets add-on
+(Pro plan) that connects your bank accounts and writes your transactions — **and
+your real account balances** — into tabs of this spreadsheet on a schedule. Because
+it pulls *every* account automatically, you get **both legs of every transfer** and
+nothing is skipped, which is what keeps per-account balances honest (no more
+phantom surpluses from a missing month).
+
+**One-time setup:**
+
+1. Install **SheetLink** from the Google Workspace Marketplace, open it in this
+   spreadsheet, and connect your accounts (Capital One, Truist, the cards, etc.).
+   Let it write its transactions tab (and, ideally, its balances tab).
+2. Run **Finance ▸ Rebuild tracker** so the **Settings** and **Accounts** tabs
+   carry the new fields.
+3. On the **Settings** tab, set **SheetLink transactions tab** and **SheetLink
+   accounts tab** to the exact tab names SheetLink created. *(If you're not sure,
+   leave them — the sync auto-detects the feed tab by its column headers.)*
+
+**Each sync (or let it run automatically):**
+
+4. **Finance ▸ Sync from SheetLink** — the feed is normalized into the
+   **Transactions** ledger: amounts split into Income/Expense, accounts/types set,
+   transfers between your own accounts tagged `Transfer`, categories mapped, and
+   each row de-duped by its stable bank `transaction_id`. Your hand-labels are
+   preserved. The summary reports what was added.
+5. The **Accounts** tab fills a **Bank Balance** column (the real balance from the
+   feed) and a **Δ Bank − Computed** column. With Opening Balance at 0, that Δ is
+   simply each account's true starting balance — **copy it into Opening Balance to
+   calibrate**. After that, any account whose Δ stays non-zero is flagged red,
+   meaning transactions are missing from the feed for that account.
+
+> **Sign check (do once):** banks/Plaid sign money *leaving* as positive. After
+> your first sync, glance at one row — if a known **deposit** shows up as an
+> **Expense**, set **SheetLink amount sign** to `in=positive` on the Settings tab
+> and sync again. That's the only thing that ever needs adjusting.
+
+> **Stop deleting transfers** in any upstream app. The Sheet tags transfers itself
+> and needs **both legs** to keep balances correct — deleting one side is what
+> created the earlier phantom balances.
+
+## Importing transactions from a CSV (Everlance / fallback)
+
+You can also import a CSV manually — useful as a fallback or before you set up the
+feed. The importer is **part of the Apps Script** — no Python, no command line. You
+pick a CSV from a pop-up and it's cleaned and written straight into the
+**Transactions** tab. It understands the [Everlance](https://everlance.com) export
+format today; it's built as a small registry of **format profiles** (Everlance and
+SheetLink ship in the box), so more banks can be added later without a rewrite.
 
 **First-time setup (once):**
 

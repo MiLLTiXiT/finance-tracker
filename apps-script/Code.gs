@@ -12,11 +12,12 @@
  *   6. Categories        — config feeding dropdowns & budgets
  *   7. Settings          — your name/banks/cards, read by the CSV importer
  *
- * The CSV converter is built IN — Finance ▸ Import transactions (CSV) cleans
- * an Everlance export and merges it entirely inside the sheet (no outside
- * script). Imports are INCREMENTAL: only transactions not already present are
- * added (matched on a hidden Ref column), so you can import as often as you
- * like — daily, even.
+ * Two ways to load transactions, both built in (no outside script):
+ *   • Finance ▸ Sync from SheetLink — pulls the SheetLink bank-feed add-on's
+ *     auto-synced tabs (transactions + real balances) into the ledger.
+ *   • Finance ▸ Import transactions (CSV) — cleans an Everlance CSV export.
+ * Both are INCREMENTAL: only transactions not already present are added (matched
+ * on a hidden Ref column), so you can sync/import as often as you like — daily.
  *
  * Re-running setup() preserves any data already typed into the tabs
  * (it only rewrites headers, formulas, formatting and validation).
@@ -46,6 +47,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Finance')
     .addItem('Rebuild tracker (setup)', 'setup')
+    .addItem('Sync from SheetLink (bank feed)', 'syncFromSheetLink')
     .addItem('Import transactions (CSV)…', 'importEverlanceCsv')
     .addSeparator()
     .addItem('About', 'about_')
@@ -191,12 +193,22 @@ function applyListValidation_(sheet, a1, list) {
 // a NEGATIVE balance (debt), e.g. a card you owe $10,000 on starts at -10000.
 function buildAccounts_(ss) {
   var sheet = getOrCreate_(ss, SHEETS.ACCT);
-  header_(sheet, ['Account', 'Type', 'Opening Balance', 'Current Balance']);
+  header_(sheet, ['Account', 'Type', 'Opening Balance', 'Current Balance',
+                  'Bank Balance', 'Δ Bank − Computed']);
   sheet.getRange('D1').setNote(
     'Current Balance = Opening Balance + this account’s income − expenses.\n' +
     'A blank Opening Balance is treated as 0, so the figure then shows only the ' +
     'net change since your first import, NOT your real balance. Enter each ' +
     'account’s actual starting balance in column C to see true balances.');
+  sheet.getRange('E1').setNote(
+    'Bank Balance is the real balance reported by the bank feed (filled by ' +
+    'Finance ▸ Sync from SheetLink). Read-only — overwritten on each sync.');
+  sheet.getRange('F1').setNote(
+    'Δ = Bank Balance − Current Balance. With Opening Balance at 0 and complete ' +
+    'data, this equals the account’s true starting balance — copy it into ' +
+    'Opening Balance to calibrate. Once you HAVE set the Opening Balance, any ' +
+    'remaining non-zero Δ means transactions are missing from the feed for that ' +
+    'account (highlighted red).');
   var tx = "'" + SHEETS.TX + "'";
 
   for (var r = 2; r <= 60; r++) {
@@ -205,9 +217,25 @@ function buildAccounts_(ss) {
       '+SUMIF(' + tx + '!F:F,A' + r + ',' + tx + '!D:D)' +
       '-SUMIF(' + tx + '!F:F,A' + r + ',' + tx + '!E:E))'
     ).setNumberFormat(CURRENCY);
+    // Δ = Bank − Computed (blank until a bank balance is synced).
+    sheet.getRange(r, 6).setFormula(
+      '=IF(OR(A' + r + '="",E' + r + '=""),"",E' + r + '-D' + r + ')'
+    ).setNumberFormat(CURRENCY);
   }
-  sheet.getRange('C2:D').setNumberFormat(CURRENCY);
+  sheet.getRange('C2:F').setNumberFormat(CURRENCY);
   applyListValidation_(sheet, 'B2:B', ['Cash', 'Credit']);
+  sheet.setColumnWidth(5, 140);
+  sheet.setColumnWidth(6, 150);
+
+  // Flag accounts that still don't reconcile AFTER an opening balance is set —
+  // that means transactions are missing from the feed for that account.
+  var aRules = sheet.getConditionalFormatRules();
+  aRules.push(SpreadsheetApp.newConditionalFormatRule()
+    .whenFormulaSatisfied('=AND($C2<>"",$E2<>"",ABS($F2)>1)')
+    .setBackground('#f4cccc')
+    .setRanges([sheet.getRange('F2:F60')])
+    .build());
+  sheet.setConditionalFormatRules(aRules);
 
   // Seed the known accounts (labels match the converter's Account column) once;
   // user fills the Opening Balance column. Re-running setup() preserves edits.
@@ -530,7 +558,26 @@ var SETTINGS_ROWS = [
   ['Lenders (loan in / repayment out)', [],
     'Names of lenders you borrow from (e.g. a cash-advance/loan provider). A ' +
     'deposit from one is treated as loan Income; a payment to one as an Expense ' +
-    '(category Other) — so repayments are not mis-filed under Housing, etc.']
+    '(category Other) — so repayments are not mis-filed under Housing, etc.'],
+  ['SheetLink transactions tab', ['SheetLink'],
+    'Exact NAME of the tab the SheetLink bank-feed add-on writes transactions to. ' +
+    'If left wrong, "Sync from SheetLink" auto-detects the tab by its headers. ' +
+    'Case-sensitive; do NOT name it "Transactions" (that is our ledger).'],
+  ['SheetLink accounts tab', ['SheetLink Accounts'],
+    'Exact NAME of the SheetLink tab that lists account balances (used to fill ' +
+    'the Bank Balance column on Accounts). Leave blank to skip balance sync.'],
+  ['SheetLink amount sign', ['out=positive'],
+    'How the feed signs amounts. Plaid/SheetLink default is "out=positive" ' +
+    '(money leaving = positive). If after a sync a DEPOSIT shows up as an ' +
+    'Expense, change this to "in=positive" and sync again.']
+];
+
+// Single-value (scalar) Settings rows read raw (case preserved), separate from
+// the uppercased keyword lists above. Used for the SheetLink integration.
+var SETTINGS_SCALARS = [
+  ['SheetLink transactions tab', 'SheetLink'],
+  ['SheetLink accounts tab', 'SheetLink Accounts'],
+  ['SheetLink amount sign', 'out=positive']
 ];
 
 // Map each Settings row label -> the cfg field the importer uses.
@@ -555,16 +602,27 @@ function buildSettings_(ss) {
     'accounts (so they move balances without distorting spend totals). ' +
     'Add a value by typing it in the next empty cell on that row.');
 
-  // Seed once (preserve user edits on re-run).
-  if (sheet.getRange(2, 1).getValue() === '') {
-    for (var i = 0; i < SETTINGS_ROWS.length; i++) {
-      var r = 2 + i;
-      var label = SETTINGS_ROWS[i][0];
-      var vals = SETTINGS_ROWS[i][1];
-      var note = SETTINGS_ROWS[i][2];
-      sheet.getRange(r, 1).setValue(label).setNote(note);
-      if (vals.length) sheet.getRange(r, 2, 1, vals.length).setValues([vals]);
+  // Seed missing rows (idempotent): append any SETTINGS_ROWS label not already
+  // present, preserving existing user edits AND back-filling new settings (e.g.
+  // the SheetLink rows) for sheets built before they existed.
+  var lastRow = sheet.getLastRow();
+  var have = {};
+  if (lastRow >= 2) {
+    var labels = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    for (var h = 0; h < labels.length; h++) {
+      var L = String(labels[h][0]).trim();
+      if (L) have[L] = true;
     }
+  }
+  var nextRow = Math.max(lastRow, 1) + 1;
+  for (var i = 0; i < SETTINGS_ROWS.length; i++) {
+    var label = SETTINGS_ROWS[i][0];
+    if (have[label]) continue;
+    var vals = SETTINGS_ROWS[i][1];
+    var note = SETTINGS_ROWS[i][2];
+    sheet.getRange(nextRow, 1).setValue(label).setNote(note);
+    if (vals.length) sheet.getRange(nextRow, 2, 1, vals.length).setValues([vals]);
+    nextRow++;
   }
   sheet.setColumnWidth(1, 230);
   sheet.setFrozenColumns(1);
@@ -608,6 +666,10 @@ var PROFILES = [{
   name: 'Everlance',
   detect: function (values) { return everlanceHeaderRow_(values) !== -1; },
   parse: function (values, cfg) { return parseEverlance_(values, cfg); }
+}, {
+  name: 'SheetLink',
+  detect: function (values) { return sheetLinkHeader_(values) !== null; },
+  parse: function (values, cfg) { return parseSheetLink_(values, cfg); }
 }];
 
 function pickProfile_(values) {
@@ -839,6 +901,313 @@ function parseEverlance_(values, cfg) {
     }
   }
   return { rows: out, stats: stats };
+}
+
+// ==================================================================
+//  SheetLink bank-feed profile + sync
+// ------------------------------------------------------------------
+//  The SheetLink add-on auto-writes bank transactions (and balances)
+//  into tabs of this spreadsheet on a schedule (Plaid under the hood).
+//  parseSheetLink_ normalizes that feed into our Transactions layout,
+//  using the stable Plaid transaction_id as the dedupe Ref. Transfer
+//  detection, category mapping and cross-account pairing are reused
+//  from the Everlance path, so own-account moves are tagged Transfer.
+// ==================================================================
+
+// Plaid personal-finance-category (primary) -> our 10 categories.
+var PLAID_CAT_MAP = {
+  'INCOME': 'Income',
+  'TRANSPORTATION': 'Transport', 'TRAVEL': 'Transport',
+  'RENT_AND_UTILITIES': 'Utilities',
+  'HOME_IMPROVEMENT': 'Housing',
+  'MEDICAL': 'Health', 'PERSONAL_CARE': 'Health',
+  'ENTERTAINMENT': 'Entertainment',
+  'GENERAL_MERCHANDISE': 'Other', 'GENERAL_SERVICES': 'Other',
+  'GOVERNMENT_AND_NON_PROFIT': 'Other', 'LOAN_PAYMENTS': 'Other',
+  'BANK_FEES': 'Other'
+};
+
+function mapPlaidCategory_(catStr, subStr, merch, isIncome) {
+  var m = String(merch).toUpperCase();
+  for (var i = 0; i < EV_MERCHANT_MAP.length; i++) {       // GasBuddy/EZPass etc.
+    if (m.indexOf(EV_MERCHANT_MAP[i][0]) !== -1) return EV_MERCHANT_MAP[i][1];
+  }
+  var c = String(catStr).toUpperCase();
+  var sub = String(subStr).toUpperCase();
+  if (c.indexOf('INCOME') !== -1) return 'Income';
+  if (c.indexOf('FOOD_AND_DRINK') !== -1)
+    return sub.indexOf('GROCER') !== -1 ? 'Groceries' : 'Dining';
+  if (c.indexOf('RENT_AND_UTIL') !== -1)
+    return sub.indexOf('RENT') !== -1 ? 'Housing' : 'Utilities';
+  for (var key in PLAID_CAT_MAP) {
+    if (PLAID_CAT_MAP.hasOwnProperty(key) && c.indexOf(key) !== -1) return PLAID_CAT_MAP[key];
+  }
+  return isIncome ? 'Income' : 'Other';
+}
+
+// Locate the SheetLink header row + a field -> column-index map. SheetLink can
+// write a 5-, 18- or 35-column layout, so map by header NAME (lowercased).
+// Returns {row, idx:{...}} or null. Requires date+amount plus a SheetLink-
+// distinctive column, so it never matches an Everlance file ('Amount','Date'…).
+function sheetLinkHeader_(values) {
+  var alias = {
+    date: ['date', 'authorized_date', 'transaction_date', 'posted'],
+    amount: ['amount'],
+    name: ['name', 'description', 'transaction_name'],
+    merchant: ['merchant_name', 'merchant'],
+    account: ['account_name', 'account'],
+    accountType: ['account_type', 'type'],
+    category: ['category', 'category_primary', 'personal_finance_category', 'primary_category'],
+    subcategory: ['subcategory', 'category_detailed', 'detailed_category'],
+    ref: ['transaction_id', 'id'],
+    pending: ['pending']
+  };
+  for (var i = 0; i < Math.min(values.length, 15); i++) {
+    var row = values[i];
+    if (!row || row.length < 2) continue;
+    var lc = {};
+    for (var c = 0; c < row.length; c++) {
+      var h = String(row[c]).trim().toLowerCase();
+      if (h && !(h in lc)) lc[h] = c;
+    }
+    var idx = {};
+    for (var field in alias) {
+      if (!alias.hasOwnProperty(field)) continue;
+      idx[field] = -1;
+      for (var a = 0; a < alias[field].length; a++) {
+        if (alias[field][a] in lc) { idx[field] = lc[alias[field][a]]; break; }
+      }
+    }
+    // Distinctive columns that SheetLink has but an Everlance export does not —
+    // its snake_case ids (account_name/merchant_name/transaction_id/account_id)
+    // or its minimal-mode bare 'account'/'description'. Everlance uses 'Merchant'
+    // and prefixed 'Bank Account'/'Bank Description', so it never matches here.
+    var distinctive = idx.ref !== -1 || ('account_name' in lc) || ('merchant_name' in lc) ||
+                      ('account_id' in lc) || ('description' in lc) || ('account' in lc);
+    if (idx.date !== -1 && idx.amount !== -1 && distinctive) return { row: i, idx: idx };
+  }
+  return null;
+}
+
+// Format a date cell (a Date from a sheet, or a string) to 'YYYY-MM-DD' so it
+// flows through writeTransactions_ exactly like the Everlance path.
+function toYmd_(v) {
+  if (v instanceof Date) {
+    return v.getFullYear() + '-' + ('0' + (v.getMonth() + 1)).slice(-2) +
+           '-' + ('0' + v.getDate()).slice(-2);
+  }
+  var s = String(v).trim();
+  var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);          // ISO 'YYYY-MM-DD…'
+  if (m) return m[1] + '-' + m[2] + '-' + m[3];
+  var d = new Date(s);                                  // fallback ('MM/DD/YYYY' etc.)
+  if (!isNaN(d.getTime())) {
+    return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) +
+           '-' + ('0' + d.getDate()).slice(-2);
+  }
+  return s;
+}
+
+function isTrue_(v) {
+  if (v === true) return true;
+  var s = String(v).trim().toLowerCase();
+  return s === 'true' || s === 'yes' || s === '1';
+}
+
+// Parse SheetLink feed rows into [date,cat,desc,inc,exp,acct,type,ref] + stats.
+// cfg.slOutPositive controls the amount sign (Plaid default: out=positive).
+function parseSheetLink_(values, cfg) {
+  var hdr = sheetLinkHeader_(values);
+  if (!hdr) throw new Error('No SheetLink data found (header row not recognised).');
+  var ix = hdr.idx;
+  var outPositive = !(cfg && cfg.slOutPositive === false);   // default true
+  var inSign = outPositive ? -1 : 1;          // amount * inSign = money-IN value (+)
+  var out = [];
+  var dupes = 0, pendingSkipped = 0;
+  var seen = {};
+  for (var j = hdr.row + 1; j < values.length; j++) {
+    var r = values[j];
+    if (!r) continue;
+    var get = function (k) { return (ix[k] !== -1 && ix[k] < r.length) ? r[ix[k]] : ''; };
+    var rawDate = get('date');
+    if (rawDate === '' || rawDate === null) continue;        // blank/spacer row
+    if (ix.pending !== -1 && isTrue_(get('pending'))) { pendingSkipped++; continue; }
+    var amt = money_(get('amount'));
+    var inflow = round2_(inSign * amt);                      // + = money in
+    var name = String(get('name')).trim();
+    var merch = String(get('merchant')).trim() || name;
+    var account = String(get('account')).trim() || 'Unknown';
+    var atypeRaw = String(get('accountType')).trim().toLowerCase();
+    var atype = (atypeRaw.indexOf('credit') !== -1 || atypeRaw.indexOf('loan') !== -1) ? 'Credit' : 'Cash';
+    var date = toYmd_(rawDate);
+    var refRaw = String(get('ref')).trim();
+    // Stable Plaid id is the ideal Ref; fall back to a composed key if absent.
+    var ref = refRaw ? 'SL:' + refRaw
+      : 'SL:' + date + '|' + round2_(amt) + '|' + merch.toUpperCase() + '|' + account.toUpperCase();
+    if (seen[ref]) { dupes++; continue; }                   // in-feed duplicate
+    seen[ref] = true;
+    var isIncome = inflow > 0;
+    var cat;
+    // isCardPayment_ uses the money-IN-positive convention (like Everlance amt).
+    if (isTransfer_(merch + ' ' + name, cfg) || isCardPayment_(account, inflow, merch, name, '', cfg)) {
+      cat = 'Transfer';
+    } else {
+      cat = mapPlaidCategory_(get('category'), get('subcategory'), merch, isIncome);
+    }
+    var inc = inflow > 0 ? inflow : '';
+    var exp = inflow < 0 ? round2_(-inflow) : '';
+    out.push([date, cat, merch, inc, exp, account, atype, ref]);
+  }
+  var paired = pairInternalTransfers_(out);
+  out.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
+  var stats = { kept: out.length, transfers: 0, dupes: dupes, paired: paired,
+                pendingSkipped: pendingSkipped, income: 0.0, expense: 0.0,
+                xferIn: 0.0, xferOut: 0.0 };
+  for (var s = 0; s < out.length; s++) {
+    var row = out[s];
+    var ii = (row[3] === '' || row[3] === null) ? 0 : Number(row[3]);
+    var ee = (row[4] === '' || row[4] === null) ? 0 : Number(row[4]);
+    if (row[1] === 'Transfer') {
+      stats.transfers++;
+      stats.xferIn = round2_(stats.xferIn + ii);
+      stats.xferOut = round2_(stats.xferOut + ee);
+    } else {
+      stats.income = round2_(stats.income + ii);
+      stats.expense = round2_(stats.expense + ee);
+    }
+  }
+  return { rows: out, stats: stats };
+}
+
+// ---- SheetLink settings (scalars) + sync handlers ----------------
+// Read a single-value Setting (case preserved, unlike the keyword lists).
+function rawSetting_(ss, label) {
+  var sheet = ss.getSheetByName(SHEETS.SETTINGS);
+  if (!sheet || sheet.getLastRow() < 2) return '';
+  var lastCol = Math.max(2, sheet.getLastColumn());
+  var data = sheet.getRange(2, 1, sheet.getLastRow() - 1, lastCol).getValues();
+  for (var i = 0; i < data.length; i++) {
+    if (String(data[i][0]).trim() === label) {
+      for (var c = 1; c < data[i].length; c++) {
+        var v = String(data[i][c]).trim();
+        if (v) return v;
+      }
+      return '';
+    }
+  }
+  return '';
+}
+
+function readSheetLinkCfg_(ss) {
+  var sign = rawSetting_(ss, 'SheetLink amount sign').toUpperCase();
+  return {
+    txTab: rawSetting_(ss, 'SheetLink transactions tab') || 'SheetLink',
+    acctTab: rawSetting_(ss, 'SheetLink accounts tab'),
+    // Default Plaid convention out=positive; only an explicit "in=positive" flips.
+    outPositive: sign.indexOf('IN=POS') === -1
+  };
+}
+
+function firstCol_(head, names) {
+  for (var i = 0; i < names.length; i++) { if (names[i] in head) return head[names[i]]; }
+  return -1;
+}
+
+// Find the SheetLink transactions sheet: try the configured name, else scan all
+// non-tracker sheets for one whose header looks like a SheetLink feed.
+function findSheetLinkSheet_(ss, configuredName) {
+  if (configuredName) {
+    var byName = ss.getSheetByName(configuredName);
+    if (byName) return byName;
+  }
+  var known = {};
+  for (var k in SHEETS) { if (SHEETS.hasOwnProperty(k)) known[SHEETS[k]] = true; }
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    if (known[sheets[i].getName()] || sheets[i].getLastRow() < 1) continue;
+    var probe = sheets[i].getRange(1, 1, Math.min(sheets[i].getLastRow(), 12),
+      Math.min(sheets[i].getLastColumn(), 40)).getValues();
+    if (sheetLinkHeader_(probe)) return sheets[i];
+  }
+  return null;
+}
+
+// Menu handler: pull the SheetLink feed into our ledger + sync bank balances.
+function syncFromSheetLink() {
+  var ui = SpreadsheetApp.getUi();
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var slCfg = readSheetLinkCfg_(ss);
+  var feed = findSheetLinkSheet_(ss, slCfg.txTab);
+  if (!feed) {
+    ui.alert('Sync from SheetLink',
+      'Could not find the SheetLink transactions tab.\n\n' +
+      'Install the SheetLink add-on and connect your accounts so it writes a tab ' +
+      'into this spreadsheet, then put its exact name on the Settings tab ' +
+      '("SheetLink transactions tab"). Re-run this once the feed exists.',
+      ui.ButtonSet.OK);
+    return;
+  }
+  var values = feed.getDataRange().getValues();
+  var cfg = readSettings_(ss);
+  cfg.slOutPositive = slCfg.outPositive;
+  var res;
+  try {
+    res = parseSheetLink_(values, cfg);
+  } catch (err) {
+    ui.alert('Sync from SheetLink',
+      'Could not read "' + feed.getName() + '": ' + err.message, ui.ButtonSet.OK);
+    return;
+  }
+  var w = writeTransactions_(ss, res.rows);
+  syncAccountsFromTx_(ss);
+  var balMsg = syncBalances_(ss, slCfg);
+  var s = res.stats;
+  ss.toast('Added ' + w.added + ' new (' + w.skipped + ' already present).',
+    'SheetLink sync complete', 6);
+  ui.alert('Sync from SheetLink',
+    'SheetLink sync complete (tab "' + feed.getName() + '").\n' +
+    'Added ' + w.added + ' new transaction(s); ' + w.skipped + ' already present.\n' +
+    'Feed held ' + s.kept + ' rows (' + s.transfers + ' transfers, ' + s.paired +
+    ' auto-paired; ' + s.pendingSkipped + ' pending skipped, ' + s.dupes +
+    ' in-feed duplicate(s)).\n' +
+    'Ledger now holds ' + w.total + ' transaction(s).\n' + balMsg + '\n\n' +
+    'Check one row: if a known DEPOSIT shows as an Expense, set "SheetLink amount ' +
+    'sign" to "in=positive" on the Settings tab and sync again.',
+    ui.ButtonSet.OK);
+}
+
+// Read SheetLink's accounts/balances tab and fill the Bank Balance column on the
+// Accounts tab, matched by account name (the same labels the feed uses, so they
+// align). Returns a short status line for the sync summary.
+function syncBalances_(ss, slCfg) {
+  if (!slCfg.acctTab) return 'Bank balances: skipped (no SheetLink accounts tab set).';
+  var src = ss.getSheetByName(slCfg.acctTab);
+  if (!src) return 'Bank balances: tab "' + slCfg.acctTab + '" not found — skipped.';
+  var vals = src.getDataRange().getValues();
+  if (vals.length < 2) return 'Bank balances: "' + slCfg.acctTab + '" is empty.';
+  var head = {};
+  for (var c = 0; c < vals[0].length; c++) head[String(vals[0][c]).trim().toLowerCase()] = c;
+  var nameCol = firstCol_(head, ['account_name', 'account', 'name']);
+  var balCol = firstCol_(head, ['current_balance', 'balance', 'current', 'available_balance', 'available']);
+  if (nameCol === -1 || balCol === -1)
+    return 'Bank balances: name/balance columns not found in "' + slCfg.acctTab + '".';
+  var bal = {};
+  for (var i = 1; i < vals.length; i++) {
+    var nm = String(vals[i][nameCol]).trim();
+    if (nm) bal[nm] = money_(vals[i][balCol]);
+  }
+  var acct = ss.getSheetByName(SHEETS.ACCT);
+  if (!acct) return 'Bank balances: Accounts tab missing.';
+  var aMax = acct.getMaxRows();
+  var names = (aMax >= 2) ? acct.getRange(2, 1, aMax - 1, 1).getValues() : [];
+  var written = 0;
+  for (var r = 0; r < names.length; r++) {
+    var nm2 = String(names[r][0]).trim();
+    if (nm2 && bal.hasOwnProperty(nm2)) {
+      acct.getRange(r + 2, 5).setValue(bal[nm2]);   // col E = Bank Balance
+      written++;
+    }
+  }
+  return 'Bank balances: updated ' + written + ' account(s) from "' + slCfg.acctTab + '".';
 }
 
 // ---- Write cleaned rows into the Transactions tab ----------------
