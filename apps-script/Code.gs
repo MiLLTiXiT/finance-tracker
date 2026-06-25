@@ -540,12 +540,13 @@ function buildCharts_(ss, cats) {
 // Each row: col A = list name, cols B…→ = one value per cell. Add a
 // value by typing in the next empty cell; the importer uppercases and
 // trims on read. The seeds below are institution/keyword lists — they
-// are NOT your name. Fill "Name tokens" yourself (kept out of code).
+// are NOT your name. "My identities" is seeded with your name; edit it yourself.
 var SETTINGS_ROWS = [
-  ['Name tokens (ALL must match)', [],
-    'Distinctive parts of YOUR name — ALL must appear for a row to count as ' +
-    'money moved between your own accounts (self Zelle/Cash App). Use stems: ' +
-    'e.g. SMIT matches both Smith and Smithe. Blank = skip name matching.'],
+  ['My identities (ANY match)', ['JAMIL', 'ABDAL', 'ALIYY'],
+    'Any spelling of YOUR name, or your own handles (Cash App tag, etc.). A row ' +
+    'whose description contains ANY of these is money moved between your own ' +
+    'accounts (self Zelle/Cash App) → tagged Transfer. One value per cell; ' +
+    'matching is case-insensitive substring. Add your Cash App tag in the next cell.'],
   ['Self P2P channels', ['ZELLE', 'PERSON-TO-PERSON', 'CASH APP', 'RTP'],
     'Instant-payment rails that, with your name, mean a self-transfer.'],
   ['Own banks', [],
@@ -591,7 +592,8 @@ var SETTINGS_SCALARS = [
 
 // Map each Settings row label -> the cfg field the importer uses.
 var SETTINGS_KEYS = {
-  'Name tokens (ALL must match)': 'nameTokens',
+  'My identities (ANY match)': 'identities',
+  'Name tokens (ALL must match)': 'identities',   // legacy label → same cfg field
   'Self P2P channels': 'selfChannels',
   'Own banks': 'ownBanks',
   'Own bank rails': 'ownBankRails',
@@ -602,6 +604,14 @@ var SETTINGS_KEYS = {
   'Own card issuers (name-only)': 'ownCardIssuers',
   'Lenders (loan in / repayment out)': 'lenders'
 };
+
+// Look up a SETTINGS_ROWS entry by its label → { vals, note } (empty if absent).
+function settingsRow_(label) {
+  for (var i = 0; i < SETTINGS_ROWS.length; i++) {
+    if (SETTINGS_ROWS[i][0] === label) return { vals: SETTINGS_ROWS[i][1], note: SETTINGS_ROWS[i][2] };
+  }
+  return { vals: [], note: '' };
+}
 
 function buildSettings_(ss) {
   var sheet = getOrCreate_(ss, SHEETS.SETTINGS);
@@ -621,6 +631,22 @@ function buildSettings_(ss) {
     for (var h = 0; h < labels.length; h++) {
       var L = String(labels[h][0]).trim();
       if (L) have[L] = true;
+      // Migrate the legacy "Name tokens (ALL must match)" row in place to the new
+      // "My identities (ANY match)" label, preserving any tokens the user typed
+      // (and seeding the name defaults only if the row is empty). Avoids stranding
+      // an orphan row or overwriting the user's edits with the new seeds.
+      if (L === 'Name tokens (ALL must match)') {
+        var newRow = settingsRow_('My identities (ANY match)');   // {vals, note}
+        var rowNum = h + 2;
+        var lastCol = Math.max(2, sheet.getLastColumn());
+        var existing = sheet.getRange(rowNum, 2, 1, lastCol - 1).getValues()[0]
+          .filter(function (v) { return String(v).trim() !== ''; });
+        sheet.getRange(rowNum, 1).setValue('My identities (ANY match)').setNote(newRow.note);
+        if (!existing.length && newRow.vals.length) {
+          sheet.getRange(rowNum, 2, 1, newRow.vals.length).setValues([newRow.vals]);
+        }
+        have['My identities (ANY match)'] = true;
+      }
     }
   }
   var nextRow = Math.max(lastRow, 1) + 1;
@@ -638,10 +664,11 @@ function buildSettings_(ss) {
 }
 
 // Read the Settings tab into a cfg object. Missing/blank rows fall back
-// to DEFAULT_CFG. Name tokens default to [] so your name is never in code.
+// to DEFAULT_CFG. Identities fall back to [] here; the actual seed lives in
+// SETTINGS_ROWS and is written to (and editable on) the Settings tab.
 function readSettings_(ss) {
   var cfg = {
-    nameTokens: [],
+    identities: [],
     selfChannels: ['ZELLE', 'PERSON-TO-PERSON', 'CASH APP', 'RTP'],
     ownBanks: [],
     ownBankRails: ['RTP', 'PERSON-TO-PERSON', 'INTERNET PAYMENT', 'ACCTVERIFY', 'TRANSFER'],
@@ -762,9 +789,12 @@ function isTransfer_(text, cfg) {
   var t = String(text).toUpperCase();
   if (EV_MASKED_XFER.test(t)) return true;
   if (t.indexOf('ONLINE TRANSFER') !== -1 || t.indexOf('DEPOSIT TRANSFER') !== -1) return true;
-  if (cfg.nameTokens.length &&
-      cfg.nameTokens.every(function (tok) { return t.indexOf(tok) !== -1; }) &&
-      anyIn_(t, cfg.selfChannels)) return true;
+  // Identity match: a row whose description names YOU (any spelling of your name or
+  // your own handles, e.g. a Cash App tag) is money moved between your own accounts.
+  // The feed never names the other side in a column — only in the description text —
+  // so this name match is the only reliable own->own signal. ANY token is enough
+  // (your name appears in different spellings on different rows).
+  if (cfg.identities.length && anyIn_(t, cfg.identities)) return true;
   if (anyIn_(t, cfg.ownBanks) && !anyIn_(t, cfg.ownBankExclude) && anyIn_(t, cfg.ownBankRails)) return true;
   if (anyIn_(t, cfg.own360)) return true;
   if (anyIn_(t, cfg.ownCards) && anyIn_(t, cfg.cardPayRails)) return true;
@@ -785,64 +815,11 @@ function isCardPayment_(account, amount, merch, bankdesc, ecat, cfg) {
   return false;
 }
 
-// ---- Internal transfer reconciliation (cross-account leg pairing) ----
-// The text rules above (isTransfer_/isCardPayment_) only catch legs that name an
-// account, rail or your own name. Money moved between your OWN accounts via a
-// generic "DEPOSIT"/"MOBILE DEPOSIT" or a person-name P2P slips through: the
-// receiving side is booked as Income and the sending side as Expense. That
-// inflates whichever account the money lands in (your hub account) with phantom
-// "income" it never really earned. Since every account in the export is your own,
-// an Income row in one account that mirrors an Expense row in a DIFFERENT account
-// (same amount, within a few days) is exactly such an internal transfer — so tag
-// BOTH legs 'Transfer' and neither distorts income/expense or per-account cash.
-//
-// Guards against false cancels: the two legs must be on different accounts, each
-// row is consumed at most once (one-to-one), and the dates must fall within
-// XFER_PAIR_DAYS. Two coincidentally-equal cross-account transactions could still
-// pair — rare; the import summary reports how much was paired so it stays
-// auditable. rows: [date, cat, desc, inc, exp, acct, type, ref]; date is a
-// 'YYYY-MM-DD' string (parse stage) or a real Date (merge stage) — both handled.
-var XFER_PAIR_DAYS = 3;
-
-function rowDateMs_(d) {
-  if (d instanceof Date) return d.getTime();
-  var p = String(d).split('-');
-  return (p.length === 3) ? new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])).getTime() : 0;
-}
-
-function pairInternalTransfers_(rows) {
-  var win = XFER_PAIR_DAYS * 86400000;
-  // Bucket the outstanding outflow (Expense) legs by rounded amount.
-  var expenses = {};   // amount -> array of row indices not yet consumed
-  var i, r, amt;
-  for (i = 0; i < rows.length; i++) {
-    r = rows[i];
-    if (r[1] === 'Transfer' || r[4] === '' || r[4] === null) continue;
-    amt = round2_(Number(r[4]));
-    (expenses[amt] = expenses[amt] || []).push(i);
-  }
-  var paired = 0;
-  for (i = 0; i < rows.length; i++) {
-    r = rows[i];
-    if (r[1] === 'Transfer' || r[3] === '' || r[3] === null) continue;  // income legs only
-    amt = round2_(Number(r[3]));
-    var bucket = expenses[amt];
-    if (!bucket) continue;
-    var inMs = rowDateMs_(r[0]);
-    for (var b = 0; b < bucket.length; b++) {
-      var ei = bucket[b];
-      if (ei < 0) continue;                       // outflow leg already consumed
-      var e = rows[ei];
-      if (e[5] === r[5]) continue;                // must be a DIFFERENT account
-      if (Math.abs(rowDateMs_(e[0]) - inMs) > win) continue;
-      r[1] = 'Transfer'; e[1] = 'Transfer';       // both legs become transfers
-      bucket[b] = -1;                             // consume the outflow leg
-      paired++;
-      break;                                      // each inflow pairs at most once
-    }
-  }
-  return paired;
-}
+// Internal-transfer detection is handled per row by isTransfer_ (it matches your
+// identity in the description). Money moved between your own accounts is tagged
+// 'Transfer' when the row names you; there is no amount/sum-based leg pairing —
+// it matched coincidentally-equal cross-account transactions and the user asked to
+// classify only by who the other party is, not by matching amounts.
 
 function everlanceHeaderRow_(values) {
   for (var i = 0; i < values.length; i++) {
@@ -888,13 +865,10 @@ function parseEverlance_(values, cfg) {
     // already in the sheet and add only what's new.
     out.push([date, cat, merch, inc, exp, acct, atype, key]);
   }
-  // Reconcile internal transfers the text rules missed (cross-account leg pairing)
-  // BEFORE tallying, so phantom hub "income" is reclassified out of the totals.
-  var paired = pairInternalTransfers_(out);
   out.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
-  // Tally after pairing so income/expense exclude every transfer (text- or
-  // pair-detected) and the transfer in/out imbalance is reported for auditing.
-  var stats = { kept: out.length, transfers: 0, dupes: dupes, paired: paired,
+  // Tally so income/expense exclude every transfer; the transfer in/out imbalance
+  // is reported for auditing (a non-zero imbalance flags one-sided/missing legs).
+  var stats = { kept: out.length, transfers: 0, dupes: dupes,
                 income: 0.0, expense: 0.0, xferIn: 0.0, xferOut: 0.0 };
   for (var s = 0; s < out.length; s++) {
     var row = out[s];
@@ -962,7 +936,7 @@ function sheetLinkHeader_(values) {
   var alias = {
     date: ['date', 'authorized_date', 'transaction_date', 'posted'],
     amount: ['amount'],
-    name: ['name', 'description', 'transaction_name'],
+    name: ['name', 'description', 'description_raw', 'original_description', 'transaction_name'],
     merchant: ['merchant_name', 'merchant'],
     account: ['account_name', 'account'],
     accountType: ['account_type', 'type'],
@@ -1066,9 +1040,8 @@ function parseSheetLink_(values, cfg) {
     var exp = inflow < 0 ? round2_(-inflow) : '';
     out.push([date, cat, merch, inc, exp, account, atype, ref]);
   }
-  var paired = pairInternalTransfers_(out);
   out.sort(function (a, b) { return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0); });
-  var stats = { kept: out.length, transfers: 0, dupes: dupes, paired: paired,
+  var stats = { kept: out.length, transfers: 0, dupes: dupes,
                 pendingSkipped: pendingSkipped, income: 0.0, expense: 0.0,
                 xferIn: 0.0, xferOut: 0.0 };
   for (var s = 0; s < out.length; s++) {
@@ -1175,8 +1148,8 @@ function syncFromSheetLink() {
   ui.alert('Sync from SheetLink',
     'SheetLink sync complete (tab "' + feed.getName() + '").\n' +
     'Added ' + w.added + ' new transaction(s); ' + w.skipped + ' already present.\n' +
-    'Feed held ' + s.kept + ' rows (' + s.transfers + ' transfers, ' + s.paired +
-    ' auto-paired; ' + s.pendingSkipped + ' pending skipped, ' + s.dupes +
+    'Feed held ' + s.kept + ' rows (' + s.transfers + ' transfers, ' +
+    s.pendingSkipped + ' pending skipped, ' + s.dupes +
     ' in-feed duplicate(s)).\n' +
     'Ledger now holds ' + w.total + ' transaction(s).\n' + balMsg + '\n\n' +
     'Check one row: if a known DEPOSIT shows as an Expense, set "SheetLink amount ' +
@@ -1258,10 +1231,11 @@ function writeTransactions_(ss, rows) {
     added++;
   }
 
-  // NOTE: auto-pairing runs only on a file's brand-new rows (in parseEverlance_),
-  // never on rows already in the ledger. Once a transaction is in the sheet, your
-  // hand edits to its Category are sacred — re-importing keeps them untouched. So
-  // if you label 3620's rows yourself, your labels persist across every re-import.
+  // NOTE: categorization (incl. transfer detection) runs only on a file's
+  // brand-new rows, never on rows already in the ledger. Once a transaction is in
+  // the sheet, your hand edits to its Category are sacred — re-importing keeps them
+  // untouched. So if you label 3620's rows yourself, your labels persist across
+  // every re-import.
 
   // Date-sort the merged ledger NEWEST first (newest at top, oldest at bottom).
   keep.sort(function (a, b) {
@@ -1343,8 +1317,7 @@ function processImportedCsv(text) {
   var msg = profile.name + ' import complete.\n' +
     'Added ' + w.added + ' new transaction(s); ' + w.skipped +
     ' were already in the sheet (skipped).\n' +
-    'This file held ' + s.kept + ' rows (' + s.transfers + ' transfers labelled, ' +
-    'of which ' + s.paired + ' auto-paired across your own accounts), ' +
+    'This file held ' + s.kept + ' rows (' + s.transfers + ' transfers labelled), ' +
     s.dupes + ' in-file duplicate(s) removed.\n' +
     'Ledger now holds ' + w.total + ' transaction(s).\n';
   // Surface unreconciled internal money: when transfers in and out don't net to

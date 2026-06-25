@@ -166,10 +166,13 @@ SheetLink ship in the box), so more banks can be added later without a rewrite.
 
 1. Run **Finance ▸ Rebuild tracker** so all tabs exist — including the new
    **Settings** tab.
-2. Open the **Settings** tab and fill in **Name tokens (ALL must match)** with
-   distinctive parts of *your* name (use stems — e.g. `SMIT` matches both *Smith*
-   and *Smithe* — so it reads correctly however the bank spells it). These let
-   the importer spot *your* self-Zelle / Cash App transfers. The other rows start
+2. Open the **Settings** tab and check **My identities (ANY match)** — it's
+   pre-seeded with the spellings of *your* name. Add any other way the banks name
+   you (e.g. your **Cash App tag**) in the next empty cell. A row whose description
+   contains **any** of these is treated as money moving between *your own* accounts
+   and tagged `Transfer`. (The bank feed never names the other side in a column —
+   only in the description text — so matching your identity there is the only
+   reliable way to tell *your* transfers from real payments.) The other rows start
    blank or with generic payment-rail keywords; add your own banks, sub-accounts
    and cards as your accounts require (see below).
 
@@ -192,22 +195,20 @@ SheetLink ship in the box), so more banks can be added later without a rewrite.
 - **tags each row with its Account and Type** — the bank account name (e.g.
   `Checking 1234`, `Visa Credit Card`) and whether it's `Cash` or `Credit`,
   so the **Accounts** tab can derive per-account balances;
-- **keeps internal transfers but labels them `Transfer`** — masked-account moves,
-  self-Zelle/Cash App, sub-account shuffles, and credit-card payments (BOTH legs:
-  the money leaving checking *and* the matching "payment received" on the card,
-  including payments labelled with only the issuer name — e.g. an issuer-named
-  debit on checking paying that issuer's credit card). These move balances (paying a
-  card lowers cash **and** card debt) but the Dashboard excludes the `Transfer`
-  category from income/expense/spend totals, so nothing is double-counted.
-  Purchases made **on** a card stay as ordinary expenses;
-- **reconciles internal transfers the text rules miss** — money moved between
-  your own accounts via a generic "DEPOSIT" or a person-name P2P has no transfer
-  keyword, so it would be booked as **Income** where it lands, inflating that
-  account. When an inflow in one account mirrors an outflow in another (same
-  amount, within a few days), the importer pairs them and labels **both** legs
-  `Transfer`. The summary reports how many it paired and flags any leftover
-  transfer in/out **imbalance** — money whose matching leg is missing from the
-  export, which may still be inflating an account's balance;
+- **labels money between your own accounts `Transfer`** — when a row's description
+  names **you** (any entry in **My identities** — your name or a handle like your
+  Cash App tag), it's a move between your own accounts, not a real payment, so it's
+  tagged `Transfer`. Money **out** to anyone else is an Expense and money **in**
+  from anyone else is Income — exactly your rule. (Paying a friend on Cash App is
+  an expense even though the bank, like Plaid, lumps all peer payments under
+  "transfer"; only the *identity* tells them apart.) Credit-card payments are also
+  tagged `Transfer` (both legs — the money leaving checking and the matching
+  "payment received" on the card, including issuer-name-only debits). `Transfer`
+  rows move balances (paying a card lowers cash **and** card debt) but the Dashboard
+  excludes them from income/expense/spend totals, so nothing is double-counted.
+  Purchases made **on** a card stay as ordinary expenses. The summary flags any
+  transfer in/out **imbalance** — a transfer whose matching leg is missing from the
+  feed, which may still be inflating an account's balance;
 - **removes exact-duplicate transactions** — if an account was synced twice, the
   same charge appears 2–3× with an identical bank reference; each real
   transaction is counted once (keyed on amount + date + merchant + bank
@@ -265,7 +266,7 @@ put.
 >
 > | Settings row | Covers |
 > |--------------|--------|
-> | **Name tokens** | your name, for self-Zelle / Cash App moves |
+> | **My identities** | any spelling of your name, or your own handles (Cash App tag, etc.) — for self-Zelle / Cash App moves; **any** one matching marks the row as your own transfer |
 > | **Own banks** + **Own bank rails** | your other linked banks (instant-payment moves) |
 > | **Own sub-accounts** | your savings/checking sub-accounts |
 > | **Own cards (rail-paid)** + **Card pay rails** | cards you pay via a labelled payment rail |
