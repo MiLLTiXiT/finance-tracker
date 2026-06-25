@@ -540,13 +540,20 @@ function buildCharts_(ss, cats) {
 // Each row: col A = list name, cols B…→ = one value per cell. Add a
 // value by typing in the next empty cell; the importer uppercases and
 // trims on read. The seeds below are institution/keyword lists — they
-// are NOT your name. "My identities" is seeded with your name; edit it yourself.
+// are NOT your name. The two identity rows ("Your name…" / "Your handles…")
+// ship BLANK so a shared copy carries no one's personal details — each user
+// types their own. They are the only own→own transfer signal (the feed never
+// names the other side in a column, only in the description text).
 var SETTINGS_ROWS = [
-  ['My identities (ANY match)', ['JAMIL', 'ABDAL', 'ALIYY'],
-    'Any spelling of YOUR name, or your own handles (Cash App tag, etc.). A row ' +
-    'whose description contains ANY of these is money moved between your own ' +
-    'accounts (self Zelle/Cash App) → tagged Transfer. One value per cell; ' +
-    'matching is case-insensitive substring. Add your Cash App tag in the next cell.'],
+  ['Your name (any spelling)', [],
+    'Type each way YOUR name appears in transactions, one per cell — e.g. JOHN, ' +
+    'J SMITH, SMITH. A row whose description contains ANY of these is money moved ' +
+    'between your own accounts (self Zelle/Cash App) → tagged Transfer. ' +
+    'Matching is case-insensitive substring.'],
+  ['Your handles & account numbers', [],
+    'Your own payment handles / account identifiers: Cash App tag, Zelle email or ' +
+    'phone, PayPal, account last-4 (e.g. 0864). One per cell. Same effect as your ' +
+    'name — any match marks the row as your own transfer.'],
   ['Self P2P channels', ['ZELLE', 'PERSON-TO-PERSON', 'CASH APP', 'RTP'],
     'Instant-payment rails that, with your name, mean a self-transfer.'],
   ['Own banks', [],
@@ -591,9 +598,13 @@ var SETTINGS_SCALARS = [
 ];
 
 // Map each Settings row label -> the cfg field the importer uses.
+// Several labels intentionally map to 'identities' (your name + your handles are
+// two input rows, plus legacy labels) — readSettings_ MERGES rows sharing a key.
 var SETTINGS_KEYS = {
-  'My identities (ANY match)': 'identities',
-  'Name tokens (ALL must match)': 'identities',   // legacy label → same cfg field
+  'Your name (any spelling)': 'identities',
+  'Your handles & account numbers': 'identities',
+  'My identities (ANY match)': 'identities',       // legacy label → same cfg field
+  'Name tokens (ALL must match)': 'identities',     // legacy label → same cfg field
   'Self P2P channels': 'selfChannels',
   'Own banks': 'ownBanks',
   'Own bank rails': 'ownBankRails',
@@ -631,21 +642,17 @@ function buildSettings_(ss) {
     for (var h = 0; h < labels.length; h++) {
       var L = String(labels[h][0]).trim();
       if (L) have[L] = true;
-      // Migrate the legacy "Name tokens (ALL must match)" row in place to the new
-      // "My identities (ANY match)" label, preserving any tokens the user typed
-      // (and seeding the name defaults only if the row is empty). Avoids stranding
-      // an orphan row or overwriting the user's edits with the new seeds.
-      if (L === 'Name tokens (ALL must match)') {
-        var newRow = settingsRow_('My identities (ANY match)');   // {vals, note}
+      // Migrate a legacy identity row in place to the new "Your name (any spelling)"
+      // label, preserving any tokens the user already typed. Covers both the original
+      // "Name tokens (ALL must match)" and the interim "My identities (ANY match)".
+      // The new label seeds BLANK, so the user's values are never overwritten and no
+      // personal name is re-introduced; the separate "Your handles & account numbers"
+      // row is absent on old sheets and gets appended blank by the seeder below.
+      if (L === 'Name tokens (ALL must match)' || L === 'My identities (ANY match)') {
+        var newRow = settingsRow_('Your name (any spelling)');   // {vals, note}
         var rowNum = h + 2;
-        var lastCol = Math.max(2, sheet.getLastColumn());
-        var existing = sheet.getRange(rowNum, 2, 1, lastCol - 1).getValues()[0]
-          .filter(function (v) { return String(v).trim() !== ''; });
-        sheet.getRange(rowNum, 1).setValue('My identities (ANY match)').setNote(newRow.note);
-        if (!existing.length && newRow.vals.length) {
-          sheet.getRange(rowNum, 2, 1, newRow.vals.length).setValues([newRow.vals]);
-        }
-        have['My identities (ANY match)'] = true;
+        sheet.getRange(rowNum, 1).setValue('Your name (any spelling)').setNote(newRow.note);
+        have['Your name (any spelling)'] = true;
       }
     }
   }
@@ -682,6 +689,7 @@ function readSettings_(ss) {
   var sheet = ss.getSheetByName(SHEETS.SETTINGS);
   if (!sheet || sheet.getLastRow() < 2 || sheet.getLastColumn() < 2) return cfg;
   var data = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+  var seen = {};   // keys already populated by a Settings row in THIS pass
   for (var i = 0; i < data.length; i++) {
     var label = String(data[i][0]).trim();
     var key = SETTINGS_KEYS[label];
@@ -691,9 +699,22 @@ function readSettings_(ss) {
       var v = String(data[i][c]).trim();
       if (v) vals.push(v.toUpperCase());
     }
-    cfg[key] = vals; // explicit (even empty) overrides the default
+    // First row for a key REPLACES the built-in default (even when empty); later
+    // rows mapping to the same key (e.g. name + handles → identities) MERGE in.
+    if (seen[key]) cfg[key] = cfg[key].concat(vals);
+    else { cfg[key] = vals; seen[key] = true; }
   }
+  for (var k in seen) { if (seen.hasOwnProperty(k)) cfg[k] = dedupe_(cfg[k]); }
   return cfg;
+}
+
+// Case-sensitive de-dup preserving first-seen order (values are already uppercased).
+function dedupe_(arr) {
+  var out = [], have = {};
+  for (var i = 0; i < arr.length; i++) {
+    if (!have[arr[i]]) { have[arr[i]] = true; out.push(arr[i]); }
+  }
+  return out;
 }
 
 // ---- Format-profile engine (built to extend) ---------------------

@@ -166,15 +166,21 @@ SheetLink ship in the box), so more banks can be added later without a rewrite.
 
 1. Run **Finance ▸ Rebuild tracker** so all tabs exist — including the new
    **Settings** tab.
-2. Open the **Settings** tab and check **My identities (ANY match)** — it's
-   pre-seeded with the spellings of *your* name. Add any other way the banks name
-   you (e.g. your **Cash App tag**) in the next empty cell. A row whose description
-   contains **any** of these is treated as money moving between *your own* accounts
-   and tagged `Transfer`. (The bank feed never names the other side in a column —
-   only in the description text — so matching your identity there is the only
-   reliable way to tell *your* transfers from real payments.) The other rows start
-   blank or with generic payment-rail keywords; add your own banks, sub-accounts
-   and cards as your accounts require (see below).
+2. Open the **Settings** tab and fill in the two identity rows — they ship
+   **blank** (a shared copy carries nobody's personal details, so this is the one
+   step you must do before your first sync):
+   - **Your name (any spelling)** — every way the banks write your name, one per
+     cell (e.g. `JOHN`, `J SMITH`, `SMITH`).
+   - **Your handles & account numbers** — your own payment handles / identifiers:
+     **Cash App tag**, Zelle email or phone, PayPal, account last-4 (e.g. `0864`).
+
+   A row whose description contains **any** value from either row is treated as
+   money moving between *your own* accounts and tagged `Transfer`. (The bank feed
+   never names the other side in a column — only in the description text — so
+   matching your identity there is the only reliable way to tell *your* transfers
+   from real payments.) The other rows start blank or with generic payment-rail
+   keywords; add your own banks, sub-accounts and cards as your accounts require
+   (see below).
 
 **Each import (as often as you like — daily is fine):**
 
@@ -196,8 +202,8 @@ SheetLink ship in the box), so more banks can be added later without a rewrite.
   `Checking 1234`, `Visa Credit Card`) and whether it's `Cash` or `Credit`,
   so the **Accounts** tab can derive per-account balances;
 - **labels money between your own accounts `Transfer`** — when a row's description
-  names **you** (any entry in **My identities** — your name or a handle like your
-  Cash App tag), it's a move between your own accounts, not a real payment, so it's
+  names **you** (any entry in **Your name** or **Your handles & account numbers** on
+  the Settings tab), it's a move between your own accounts, not a real payment, so it's
   tagged `Transfer`. Money **out** to anyone else is an Expense and money **in**
   from anyone else is Income — exactly your rule. (Paying a friend on Cash App is
   an expense even though the bank, like Plaid, lumps all peer payments under
@@ -266,7 +272,8 @@ put.
 >
 > | Settings row | Covers |
 > |--------------|--------|
-> | **My identities** | any spelling of your name, or your own handles (Cash App tag, etc.) — for self-Zelle / Cash App moves; **any** one matching marks the row as your own transfer |
+> | **Your name (any spelling)** | every spelling of your name — for self-Zelle / Cash App moves; **any** one matching marks the row as your own transfer |
+> | **Your handles & account numbers** | your own payment handles / identifiers (Cash App tag, Zelle email/phone, account last-4); merged with your name — any match = your own transfer |
 > | **Own banks** + **Own bank rails** | your other linked banks (instant-payment moves) |
 > | **Own sub-accounts** | your savings/checking sub-accounts |
 > | **Own cards (rail-paid)** + **Card pay rails** | cards you pay via a labelled payment rail |
