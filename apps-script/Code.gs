@@ -128,13 +128,17 @@ function buildTransactions_(ss, cats) {
   // ONLY transactions not already present (incremental import). Hidden — it's
   // bookkeeping, not for reading.
   //
-  // Col I = Balance: running cumulative net (=prev + Income - Expense), a global
-  // line across all accounts; real per-account balances live on the Accounts
-  // tab. Guarded so empty rows stay blank. Recomputed by the importer after each
-  // load once rows are date-sorted.
+  // Col I = Balance: running cumulative net, a global line across all accounts;
+  // real per-account balances live on the Accounts tab. Rows are ordered newest
+  // at the top, so the balance accumulates from the BOTTOM (oldest) up: each row =
+  // the row below (next-older) + its own Income - Expense. The top row therefore
+  // shows the current global net, like a bank statement. Guarded so empty rows
+  // stay blank; N() on the below-reference treats an empty row as 0 so the chain
+  // terminates cleanly at the data/empty boundary. The last template row is the
+  // base case (prev = 0), which also avoids a #REF past the sheet's last row.
   var formulas = [];
   for (var r = 2; r <= TX_LAST_ROW; r++) {
-    var prev = (r === 2) ? '0' : 'I' + (r - 1);
+    var prev = (r === TX_LAST_ROW) ? '0' : 'N(I' + (r + 1) + ')';
     formulas.push(['=IF(AND(D' + r + '="",E' + r + '=""),"",' +
       prev + '+N(D' + r + ')-N(E' + r + '))']);
   }
@@ -157,9 +161,10 @@ function buildTransactions_(ss, cats) {
   // e.g. set the Account column to a single account (like "Checking 3620") to
   // review just those rows, then fix any Category yourself (set it to "Transfer"
   // to pull a row out of income/expense totals). Re-created idempotently.
-  // Note: FILTERING (hiding rows) leaves the running Balance intact; SORTING
-  // physically reorders rows, so the global Balance column reflows — re-sort by
-  // Date (or run Finance ▸ Rebuild) to restore it. Your edits are unaffected.
+  // The ledger is kept newest-at-top by the importer. Note: FILTERING (hiding
+  // rows) leaves the running Balance intact; SORTING by hand physically reorders
+  // rows, so the global Balance column reflows — re-run Finance ▸ Sync/Import (or
+  // Rebuild) to restore the canonical newest-first order. Your edits are unaffected.
   var existingFilter = sheet.getFilter();
   if (existingFilter) existingFilter.remove();
   sheet.getRange(1, 1, TX_LAST_ROW, 9).createFilter();
@@ -1219,7 +1224,8 @@ function syncBalances_(ss, slCfg) {
 // the ledger, matching on the hidden Ref column so each transaction is added
 // only once. Rows the importer manages all carry a Ref; the example seed rows
 // (no Ref) are dropped on the first import. The merged set is re-sorted by date
-// and the running Balance (col I) is recomputed. Returns {added, skipped, total}.
+// NEWEST first and the running Balance (col I) is recomputed. Returns {added,
+// skipped, total}.
 function writeTransactions_(ss, rows) {
   var tx = ss.getSheetByName(SHEETS.TX);
   if (!tx) throw new Error('"Clean Transactions" tab not found — run "Rebuild tracker" first.');
@@ -1257,21 +1263,24 @@ function writeTransactions_(ss, rows) {
   // hand edits to its Category are sacred — re-importing keeps them untouched. So
   // if you label 3620's rows yourself, your labels persist across every re-import.
 
-  // Date-sort the merged ledger (oldest first).
+  // Date-sort the merged ledger NEWEST first (newest at top, oldest at bottom).
   keep.sort(function (a, b) {
     var x = (a[0] instanceof Date) ? a[0].getTime() : 0;
     var y = (b[0] instanceof Date) ? b[0].getTime() : 0;
-    return x - y;
+    return y - x;
   });
 
   // Rewrite the data region and recompute the running balance.
   tx.getRange(2, 1, maxRows - 1, 9).clearContent();
   if (keep.length) {
     tx.getRange(2, 1, keep.length, 8).setValues(keep);
+    // Rows run newest-first, so the running Balance accumulates from the BOTTOM
+    // (oldest) up: each row = the row below (next-older) + its own Income - Expense.
+    // The last row in the set (the oldest) is the base case (prev = 0).
     var formulas = [];
     for (var f = 0; f < keep.length; f++) {
       var row = f + 2;
-      var prev = (row === 2) ? '0' : 'I' + (row - 1);
+      var prev = (f === keep.length - 1) ? '0' : 'N(I' + (row + 1) + ')';
       formulas.push(['=IF(AND(D' + row + '="",E' + row + '=""),"",' +
         prev + '+N(D' + row + ')-N(E' + row + '))']);
     }
