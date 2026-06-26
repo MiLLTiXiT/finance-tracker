@@ -216,65 +216,33 @@ function applyListValidation_(sheet, a1, list) {
   sheet.getRange(a1).setDataValidation(rule);
 }
 
-// ---- Account Summary (real bank balances + reconciliation) --------
-// ONE clean row per account. Bank Balance (col E) is the real balance pulled from
-// SheetLink's feed by syncBalances_ — credit cards carry it as NEGATIVE (debt) — and
-// the Dashboard's net worth is driven by THIS column. Current Balance (col D) is the
-// transaction-derived figure (Opening + income − expense) kept only for reconciliation:
-// Δ (col F) = Bank − Computed flags accounts whose transactions are incomplete.
+// ---- Account Summary (one real balance per account) ---------------
+// Deliberately SIMPLE: three columns — Account | Type | Balance. Balance is the REAL
+// balance from SheetLink's feed (filled by syncBalances_), credit cards as NEGATIVE
+// (debt). The Dashboard's net worth is the sum of this column. We dropped the old
+// transaction-derived "Current Balance"/Δ columns — with a real feed they were just a
+// confusing second (and inaccurate) number next to the true one.
 function buildAccounts_(ss) {
   var sheet = getOrCreate_(ss, SHEETS.ACCT);
-  header_(sheet, ['Account', 'Type', 'Opening Balance', 'Current Balance',
-                  'Bank Balance', 'Δ Bank − Computed']);
-  sheet.getRange('D1').setNote(
-    'Current Balance = Opening Balance + this account’s income − expenses (matched to ' +
-    'the ledger ignoring any ••••mask suffix). Used for reconciliation only — net worth ' +
-    'comes from Bank Balance. A blank Opening Balance is treated as 0.');
-  sheet.getRange('E1').setNote(
-    'Bank Balance is the REAL balance from the bank feed (filled by Finance ▸ Sync from ' +
-    'SheetLink); credit cards show as negative (debt). Drives net worth. Read-only — ' +
-    'refreshed from the latest feed snapshot on each sync.');
-  sheet.getRange('F1').setNote(
-    'Δ = Bank Balance − Current Balance. With Opening Balance at 0 and complete ' +
-    'data, this equals the account’s true starting balance — copy it into ' +
-    'Opening Balance to calibrate. Once you HAVE set the Opening Balance, any ' +
-    'remaining non-zero Δ means transactions are missing from the feed for that ' +
-    'account (highlighted red).');
-  var tx = "'" + SHEETS.TX + "'";
-
-  for (var r = 2; r <= 60; r++) {
-    // Match on A&"*" so a clean summary name ("Checking 3620") still sums ledger rows
-    // that carry the old masked label ("Checking 3620 ••••3620").
-    sheet.getRange(r, 4).setFormula(
-      '=IF(A' + r + '="","",N(C' + r + ')' +
-      '+SUMIF(' + tx + '!F:F,A' + r + '&"*",' + tx + '!D:D)' +
-      '-SUMIF(' + tx + '!F:F,A' + r + '&"*",' + tx + '!E:E))'
-    ).setNumberFormat(CURRENCY);
-    // Δ = Bank − Computed (blank until a bank balance is synced).
-    sheet.getRange(r, 6).setFormula(
-      '=IF(OR(A' + r + '="",E' + r + '=""),"",E' + r + '-D' + r + ')'
-    ).setNumberFormat(CURRENCY);
+  // Clear any leftover columns from the old 6-column layout so no stale
+  // "Current Balance"/"Bank Balance"/Δ values linger beside the new single column.
+  if (sheet.getLastColumn() > 3) {
+    sheet.getRange(1, 4, sheet.getMaxRows(), sheet.getLastColumn() - 3).clearContent()
+      .clearFormat().clearDataValidations();
   }
-  sheet.getRange('C2:F').setNumberFormat(CURRENCY);
+  header_(sheet, ['Account', 'Type', 'Balance']);
+  sheet.getRange('C1').setNote(
+    'Balance is the REAL balance from the bank feed (filled by Finance ▸ Sync from ' +
+    'SheetLink). Credit cards show as negative (debt). Net worth on the Dashboard is the ' +
+    'sum of this column. Read-only — refreshed from the latest feed snapshot each sync.');
+  sheet.getRange('C2:C').setNumberFormat(CURRENCY);
   applyListValidation_(sheet, 'B2:B', ['Cash', 'Credit']);
-  sheet.setColumnWidth(5, 140);
-  sheet.setColumnWidth(6, 150);
 
-  // Flag accounts that still don't reconcile AFTER an opening balance is set —
-  // that means transactions are missing from the feed for that account.
-  var aRules = sheet.getConditionalFormatRules();
-  aRules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenFormulaSatisfied('=AND($C2<>"",$E2<>"",ABS($F2)>1)')
-    .setBackground('#f4cccc')
-    .setRanges([sheet.getRange('F2:F60')])
-    .build());
-  sheet.setConditionalFormatRules(aRules);
-
-  // No example seed rows: real accounts (with Type + Bank Balance) are written here by
-  // syncBalances_ from the live feed, and any ledger-only accounts by syncAccountsFromTx_.
-  sheet.setColumnWidth(1, 200);
+  // No example seed rows: real accounts are written here by syncBalances_ from the live
+  // feed, and any ledger-only accounts (no feed balance) by syncAccountsFromTx_.
+  sheet.setColumnWidth(1, 220);
+  sheet.setColumnWidth(2, 90);
   sheet.setColumnWidth(3, 140);
-  sheet.setColumnWidth(4, 140);
 }
 
 // ---- 3. Recurring expenses ---------------------------------------
@@ -390,31 +358,21 @@ function buildDashboard_(ss, cats) {
     .setNumberFormat(CURRENCY);
 
   // --- Standing balances by account group (from Account Summary) ---
-  // Net worth is driven by the REAL Bank Balance (col E) from the feed, so credit-card
-  // debt counts even when a card's individual purchases aren't all synced. Current
-  // Balance (col D) is reconciliation only.
+  // Net worth is the sum of the real per-account Balance (col C) from the feed, so
+  // credit-card debt counts even when a card's individual purchases aren't all synced.
   var acct = "'" + SHEETS.ACCT + "'";
   var bal = function (type) {
-    return '=SUMIF(' + acct + '!B2:B,"' + type + '",' + acct + '!E2:E)';
+    return '=SUMIF(' + acct + '!B2:B,"' + type + '",' + acct + '!C2:C)';
   };
-  // With real bank balances synced this IS cash on hand; before the first sync (no Bank
-  // Balance yet) it falls back to the transaction-derived net change, so label honestly.
   sheet.getRange('D3').setFormula(
-    '=IF(COUNT(' + acct + '!E2:E)=0,"Net change since import ⚠","Cash on hand")'
+    '=IF(COUNT(' + acct + '!C2:C)=0,"Cash on hand (sync to fill) ⚠","Cash on hand")'
   ).setFontWeight('bold');
   sheet.getRange('D3').setNote(
-    'Cash on hand = sum of the real Bank Balance for your Cash accounts (from the feed). ' +
-    'Until the first Sync from SheetLink fills Bank Balance, this shows the transaction ' +
-    'net change since import instead.');
-  sheet.getRange('E3').setFormula(
-    '=IF(COUNT(' + acct + '!E2:E)=0,SUMIF(' + acct + '!B2:B,"Cash",' + acct + '!D2:D),' +
-    bal('Cash').substring(1) + ')'
-  ).setNumberFormat(CURRENCY);
+    'Cash on hand = sum of the real Balance for your Cash accounts (from the feed). ' +
+    'Run Finance ▸ Sync from SheetLink to fill the balances.');
+  sheet.getRange('E3').setFormula(bal('Cash')).setNumberFormat(CURRENCY);
   put_(sheet, 'D4', 'Credit (debt)', true);
-  sheet.getRange('E4').setFormula(
-    '=IF(COUNT(' + acct + '!E2:E)=0,SUMIF(' + acct + '!B2:B,"Credit",' + acct + '!D2:D),' +
-    bal('Credit').substring(1) + ')'
-  ).setNumberFormat(CURRENCY);
+  sheet.getRange('E4').setFormula(bal('Credit')).setNumberFormat(CURRENCY);
   sheet.getRange('E4').setNote(
     'Total credit-card / loan debt — the real amount owed from the feed (negative). ' +
     'Subtracts from net worth.');
@@ -609,9 +567,9 @@ var SETTINGS_ROWS = [
     'not the tab name), so that is the raw feed. Our curated ledger lives on the ' +
     'separate "Clean Transactions" tab; "Sync from SheetLink" reads this feed and ' +
     'writes the cleaned rows there. Case-sensitive.'],
-  ['SheetLink accounts tab', ['SheetLink Accounts'],
-    'Exact NAME of the SheetLink tab that lists account balances (used to fill ' +
-    'the Bank Balance column on Accounts). Leave blank to skip balance sync.'],
+  ['SheetLink accounts tab', ['(auto-detected)'],
+    'No longer needed — Sync finds SheetLink\'s balance tab automatically by its ' +
+    'columns and fills the Balance column on Account Summary. Left here for reference.'],
   ['SheetLink amount sign', ['out=positive'],
     'How the feed signs amounts. Plaid/SheetLink default is "out=positive" ' +
     '(money leaving = positive). If after a sync a DEPOSIT shows up as an ' +
@@ -1360,30 +1318,12 @@ function syncBalances_(ss) {
     var name = order[o], it = info[name];
     var row = rowOf[name];
     if (!row) { row = ++lastRow; rowOf[name] = row; acct.getRange(row, 1).setValue(name); }
-    acct.getRange(row, 2).setValue(it.type);   // B = Type (Cash / Credit)
-    acct.getRange(row, 5).setValue(it.bal);    // E = Bank Balance (credit = negative)
+    acct.getRange(row, 2).setValue(it.type);                      // B = Type (Cash / Credit)
+    acct.getRange(row, 3).setValue(it.bal).setNumberFormat(CURRENCY); // C = Balance (credit negative)
     written++;
   }
-  ensureAccountFormulas_(acct, lastRow);
   return 'Bank balances: ' + written + ' account(s) updated' +
     (trimmed ? ' (kept latest snapshot, trimmed older)' : '') + '.';
-}
-
-// Make sure the Current Balance (D) and Δ (F) formulas exist for every used row,
-// in case the account list grew past the range buildAccounts_ pre-filled.
-function ensureAccountFormulas_(acct, lastRow) {
-  var tx = "'" + SHEETS.TX + "'";
-  for (var row = 2; row <= lastRow; row++) {
-    if (acct.getRange(row, 4).getFormula()) continue;
-    acct.getRange(row, 4).setFormula(
-      '=IF(A' + row + '="","",N(C' + row + ')' +
-      '+SUMIF(' + tx + '!F:F,A' + row + '&"*",' + tx + '!D:D)' +
-      '-SUMIF(' + tx + '!F:F,A' + row + '&"*",' + tx + '!E:E))'
-    ).setNumberFormat(CURRENCY);
-    acct.getRange(row, 6).setFormula(
-      '=IF(OR(A' + row + '="",E' + row + '=""),"",E' + row + '-D' + row + ')'
-    ).setNumberFormat(CURRENCY);
-  }
 }
 
 // ---- Write cleaned rows into the Transactions tab ----------------
