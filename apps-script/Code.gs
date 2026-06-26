@@ -28,7 +28,10 @@
 // ---- Config -------------------------------------------------------
 var SHEETS = {
   TX: 'Clean Transactions',
-  ACCT: 'Accounts',
+  // Our curated balances view. SheetLink hard-codes the tab name "Accounts" for
+  // its own balance dump (just like it does "Transactions" for the raw feed), so
+  // our summary lives on a separate tab it never writes to. See migrateAccountsTab_.
+  ACCT: 'Account Summary',
   DASH: 'Dashboard',
   RECUR: 'Recurring',
   GOALS: 'Goals',
@@ -68,6 +71,7 @@ function about_() {
 // ---- Entry point --------------------------------------------------
 function setup() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
+  migrateAccountsTab_(ss);           // move our summary off the "Accounts" name SheetLink grabs
   var cats = buildCategories_(ss);   // build first; others reference it
   buildTransactions_(ss, cats);
   buildAccounts_(ss);                // opening balances -> current balances
@@ -84,6 +88,26 @@ function setup() {
 // ---- Helpers ------------------------------------------------------
 function getOrCreate_(ss, name) {
   return ss.getSheetByName(name) || ss.insertSheet(name);
+}
+
+// One-time migration: earlier versions named our curated balances tab "Accounts",
+// which is exactly the tab name SheetLink colonizes with its own balance dump. If a
+// legacy "Accounts" tab exists and our new "Account Summary" tab doesn't yet:
+//   - If it's a CLEAN curated tab (our headers, no SheetLink columns) → rename it so
+//     any Opening Balances the user typed are preserved.
+//   - If SheetLink already merged into it (has current_balance/last_synced_at columns)
+//     → leave it for SheetLink; a fresh "Account Summary" is built and populated from
+//     it by syncBalances_. (We never rename SheetLink's data onto our formula tab.)
+function migrateAccountsTab_(ss) {
+  var legacy = ss.getSheetByName('Accounts');
+  if (!legacy || ss.getSheetByName(SHEETS.ACCT)) return;
+  var ncol = Math.max(1, legacy.getLastColumn());
+  var head = legacy.getRange(1, 1, 1, ncol).getValues()[0]
+    .map(function (x) { return String(x).trim().toLowerCase(); });
+  var colonized = head.indexOf('current_balance') !== -1 ||
+                  head.indexOf('last_synced_at') !== -1 ||
+                  head.indexOf('account_id') !== -1;
+  if (!colonized) legacy.setName(SHEETS.ACCT);
 }
 
 function header_(sheet, headers) {
@@ -192,24 +216,24 @@ function applyListValidation_(sheet, a1, list) {
   sheet.getRange(a1).setDataValidation(rule);
 }
 
-// ---- Accounts (opening balances -> derived current balances) ------
-// Current Balance = Opening Balance + (this account's Income) - (its Expense),
-// summed over ALL transactions INCLUDING transfers — so paying a card lowers
-// cash AND lowers card debt. Enter each Opening Balance yourself: what the
-// account held just before the first imported transaction. Credit cards carry
-// a NEGATIVE balance (debt), e.g. a card you owe $10,000 on starts at -10000.
+// ---- Account Summary (real bank balances + reconciliation) --------
+// ONE clean row per account. Bank Balance (col E) is the real balance pulled from
+// SheetLink's feed by syncBalances_ — credit cards carry it as NEGATIVE (debt) — and
+// the Dashboard's net worth is driven by THIS column. Current Balance (col D) is the
+// transaction-derived figure (Opening + income − expense) kept only for reconciliation:
+// Δ (col F) = Bank − Computed flags accounts whose transactions are incomplete.
 function buildAccounts_(ss) {
   var sheet = getOrCreate_(ss, SHEETS.ACCT);
   header_(sheet, ['Account', 'Type', 'Opening Balance', 'Current Balance',
                   'Bank Balance', 'Δ Bank − Computed']);
   sheet.getRange('D1').setNote(
-    'Current Balance = Opening Balance + this account’s income − expenses.\n' +
-    'A blank Opening Balance is treated as 0, so the figure then shows only the ' +
-    'net change since your first import, NOT your real balance. Enter each ' +
-    'account’s actual starting balance in column C to see true balances.');
+    'Current Balance = Opening Balance + this account’s income − expenses (matched to ' +
+    'the ledger ignoring any ••••mask suffix). Used for reconciliation only — net worth ' +
+    'comes from Bank Balance. A blank Opening Balance is treated as 0.');
   sheet.getRange('E1').setNote(
-    'Bank Balance is the real balance reported by the bank feed (filled by ' +
-    'Finance ▸ Sync from SheetLink). Read-only — overwritten on each sync.');
+    'Bank Balance is the REAL balance from the bank feed (filled by Finance ▸ Sync from ' +
+    'SheetLink); credit cards show as negative (debt). Drives net worth. Read-only — ' +
+    'refreshed from the latest feed snapshot on each sync.');
   sheet.getRange('F1').setNote(
     'Δ = Bank Balance − Current Balance. With Opening Balance at 0 and complete ' +
     'data, this equals the account’s true starting balance — copy it into ' +
@@ -219,10 +243,12 @@ function buildAccounts_(ss) {
   var tx = "'" + SHEETS.TX + "'";
 
   for (var r = 2; r <= 60; r++) {
+    // Match on A&"*" so a clean summary name ("Checking 3620") still sums ledger rows
+    // that carry the old masked label ("Checking 3620 ••••3620").
     sheet.getRange(r, 4).setFormula(
       '=IF(A' + r + '="","",N(C' + r + ')' +
-      '+SUMIF(' + tx + '!F:F,A' + r + ',' + tx + '!D:D)' +
-      '-SUMIF(' + tx + '!F:F,A' + r + ',' + tx + '!E:E))'
+      '+SUMIF(' + tx + '!F:F,A' + r + '&"*",' + tx + '!D:D)' +
+      '-SUMIF(' + tx + '!F:F,A' + r + '&"*",' + tx + '!E:E))'
     ).setNumberFormat(CURRENCY);
     // Δ = Bank − Computed (blank until a bank balance is synced).
     sheet.getRange(r, 6).setFormula(
@@ -244,15 +270,8 @@ function buildAccounts_(ss) {
     .build());
   sheet.setConditionalFormatRules(aRules);
 
-  // Seed the known accounts (labels match the converter's Account column) once;
-  // user fills the Opening Balance column. Re-running setup() preserves edits.
-  if (sheet.getRange(2, 1).getValue() === '') {
-    sheet.getRange(2, 1, 3, 2).setValues([
-      ['Checking 1234', 'Cash'],
-      ['Savings 5678', 'Cash'],
-      ['Credit Card', 'Credit']
-    ]);
-  }
+  // No example seed rows: real accounts (with Type + Bank Balance) are written here by
+  // syncBalances_ from the live feed, and any ledger-only accounts by syncAccountsFromTx_.
   sheet.setColumnWidth(1, 200);
   sheet.setColumnWidth(3, 140);
   sheet.setColumnWidth(4, 140);
@@ -370,25 +389,35 @@ function buildDashboard_(ss, cats) {
     .setFormula("=SUMIF('" + SHEETS.RECUR + "'!E2:E,TRUE,'" + SHEETS.RECUR + "'!C2:C)")
     .setNumberFormat(CURRENCY);
 
-  // --- Standing balances by account group (from the Accounts tab) ---
+  // --- Standing balances by account group (from Account Summary) ---
+  // Net worth is driven by the REAL Bank Balance (col E) from the feed, so credit-card
+  // debt counts even when a card's individual purchases aren't all synced. Current
+  // Balance (col D) is reconciliation only.
   var acct = "'" + SHEETS.ACCT + "'";
   var bal = function (type) {
-    return '=SUMIF(' + acct + '!B2:B,"' + type + '",' + acct + '!D2:D)';
+    return '=SUMIF(' + acct + '!B2:B,"' + type + '",' + acct + '!E2:E)';
   };
-  // Label is honest about what the figure means: with no Opening Balances set,
-  // each account's "Current Balance" is just its net change since the first
-  // import — NOT real cash — so don't call it "Cash on hand" until a starting
-  // balance exists. The label flips automatically once any Opening Balance is set.
+  // With real bank balances synced this IS cash on hand; before the first sync (no Bank
+  // Balance yet) it falls back to the transaction-derived net change, so label honestly.
   sheet.getRange('D3').setFormula(
-    '=IF(COUNT(' + acct + '!C2:C)=0,"Net change since import ⚠","Cash on hand")'
+    '=IF(COUNT(' + acct + '!E2:E)=0,"Net change since import ⚠","Cash on hand")'
   ).setFontWeight('bold');
   sheet.getRange('D3').setNote(
-    'While every Opening Balance on the Accounts tab is blank, this figure is the ' +
-    'net change since your first import — NOT your real cash. Enter each account’s ' +
-    'starting balance on the Accounts tab to turn this into true Cash on hand.');
-  sheet.getRange('E3').setFormula(bal('Cash')).setNumberFormat(CURRENCY);
+    'Cash on hand = sum of the real Bank Balance for your Cash accounts (from the feed). ' +
+    'Until the first Sync from SheetLink fills Bank Balance, this shows the transaction ' +
+    'net change since import instead.');
+  sheet.getRange('E3').setFormula(
+    '=IF(COUNT(' + acct + '!E2:E)=0,SUMIF(' + acct + '!B2:B,"Cash",' + acct + '!D2:D),' +
+    bal('Cash').substring(1) + ')'
+  ).setNumberFormat(CURRENCY);
   put_(sheet, 'D4', 'Credit (debt)', true);
-  sheet.getRange('E4').setFormula(bal('Credit')).setNumberFormat(CURRENCY);
+  sheet.getRange('E4').setFormula(
+    '=IF(COUNT(' + acct + '!E2:E)=0,SUMIF(' + acct + '!B2:B,"Credit",' + acct + '!D2:D),' +
+    bal('Credit').substring(1) + ')'
+  ).setNumberFormat(CURRENCY);
+  sheet.getRange('E4').setNote(
+    'Total credit-card / loan debt — the real amount owed from the feed (negative). ' +
+    'Subtracts from net worth.');
   put_(sheet, 'D5', 'Net worth (all)', true);
   sheet.getRange('E5').setFormula('=E3+E4').setNumberFormat(CURRENCY);
 
@@ -1048,7 +1077,7 @@ function parseSheetLink_(values, cfg) {
     var inflow = round2_(inSign * amt);                      // + = money in
     var name = String(get('name')).trim();
     var merch = String(get('merchant')).trim() || name;
-    var account = String(get('account')).trim() || 'Unknown';
+    var account = cleanAcctName_(get('account')) || 'Unknown';
     // Some institutions (e.g. Discover) sign amounts BACKWARDS vs the rest of the
     // feed, so a purchase would land as Income. Flip such accounts after the global
     // toggle — see the "Invert amount sign for (accounts)" Settings row.
@@ -1131,6 +1160,90 @@ function firstCol_(head, names) {
   return -1;
 }
 
+// Strip redundant masked tails from an account label so the feed's
+// "Checking 3620 ••••3620" / "Robinhood Credit Card **5254 ••••5254" /
+// "EVERYDAY CHECKING ...3754" collapse to a single clean name. Removes one or more
+// trailing "<mask chars><digits>" groups (••••, ****, ..., ·, etc.). The real
+// account number already embedded in the name (e.g. "Checking 3620") is kept.
+function cleanAcctName_(name) {
+  var s = String(name == null ? '' : name).trim();
+  var prev;
+  do {
+    prev = s;
+    s = s.replace(/[\s\-]*(?:[•*·.]{2,}|x)\s*\d{3,5}\s*$/i, '').trim();
+  } while (s !== prev && s !== '');
+  return s || String(name == null ? '' : name).trim();
+}
+
+// Find SheetLink's accounts/balances tab by signature columns (it carries
+// current_balance + a sync timestamp / subtype / account_id), wherever SheetLink
+// wrote it — robust to whatever name it uses. Skips our own tracker tabs.
+function findBalancesSheet_(ss) {
+  var known = {};
+  for (var k in SHEETS) { if (SHEETS.hasOwnProperty(k)) known[SHEETS[k]] = true; }
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    var sh = sheets[i];
+    if (known[sh.getName()] || sh.getLastRow() < 1) continue;
+    var ncol = Math.min(sh.getLastColumn(), 40);
+    var head = sh.getRange(1, 1, 1, ncol).getValues()[0]
+      .map(function (x) { return String(x).trim().toLowerCase(); });
+    if (head.indexOf('current_balance') !== -1 &&
+        (head.indexOf('last_synced_at') !== -1 || head.indexOf('subtype') !== -1 ||
+         head.indexOf('account_id') !== -1)) {
+      return sh;
+    }
+  }
+  return null;
+}
+
+// Resolve a human account name from a balance row. Uses the header-named column when
+// present; otherwise (legacy tab where SheetLink's name landed under one of OUR
+// headers) falls back to the leftmost cell that looks like a name — not a Plaid id,
+// number, currency, timestamp, or a bare type/subtype word.
+function balanceName_(row, nameCol) {
+  if (nameCol !== -1) {
+    var n = String(row[nameCol]).trim();
+    if (n) return n;
+  }
+  for (var c = 0; c < row.length; c++) {
+    var v = String(row[c]).trim();
+    if (!v) continue;
+    if (/^[A-Za-z0-9]{20,}$/.test(v)) continue;              // Plaid account_id
+    if (/^[-$\d.,%()\s]+$/.test(v)) continue;                // number / currency
+    if (/^\d{4}-\d\d-\d\dt/i.test(v)) continue;              // ISO timestamp
+    if (/^(cash|credit|checking|savings|credit card|loan|brokerage|crypto( exchange)?|depository|money market)$/i.test(v)) continue;
+    return v;
+  }
+  return '';
+}
+
+// Delete SheetLink's STALE balance snapshots in place: SheetLink appends a fresh full
+// copy of every account on each sync (keyed by last_synced_at) and never removes the
+// old ones, so the tab grows without bound. Keep header + rows from the most recent
+// sync (rows that actually carry a balance); drop everything older. Returns kept count.
+function trimBalancesSnapshot_(sheet, tsCol, balCol) {
+  var vals = sheet.getDataRange().getValues();
+  if (vals.length < 2) return 0;
+  var latest = '';
+  if (tsCol !== -1) {
+    for (var i = 1; i < vals.length; i++) {
+      var t = String(vals[i][tsCol]).trim();
+      if (t > latest) latest = t;
+    }
+  }
+  var keep = [vals[0]];
+  for (var j = 1; j < vals.length; j++) {
+    var hasBal = balCol !== -1 && String(vals[j][balCol]).trim() !== '';
+    var tsOk = (tsCol === -1) || (String(vals[j][tsCol]).trim() === latest);
+    if (hasBal && tsOk) keep.push(vals[j]);
+  }
+  if (keep.length === vals.length) return keep.length - 1;   // nothing stale
+  sheet.clearContents();
+  sheet.getRange(1, 1, keep.length, keep[0].length).setValues(keep);
+  return keep.length - 1;
+}
+
 // Find the SheetLink transactions sheet: try the configured name, else scan all
 // non-tracker sheets for one whose header looks like a SheetLink feed.
 function findSheetLinkSheet_(ss, configuredName) {
@@ -1177,8 +1290,8 @@ function syncFromSheetLink() {
     return;
   }
   var w = writeTransactions_(ss, res.rows);
-  syncAccountsFromTx_(ss);
-  var balMsg = syncBalances_(ss, slCfg);
+  var balMsg = syncBalances_(ss);   // feed balances are the master account list
+  syncAccountsFromTx_(ss);          // add any ledger-only accounts the feed lacks
   var s = res.stats;
   ss.toast('Added ' + w.added + ' new (' + w.skipped + ' already present).',
     'SheetLink sync complete', 6);
@@ -1194,39 +1307,83 @@ function syncFromSheetLink() {
     ui.ButtonSet.OK);
 }
 
-// Read SheetLink's accounts/balances tab and fill the Bank Balance column on the
-// Accounts tab, matched by account name (the same labels the feed uses, so they
-// align). Returns a short status line for the sync summary.
-function syncBalances_(ss, slCfg) {
-  if (!slCfg.acctTab) return 'Bank balances: skipped (no SheetLink accounts tab set).';
-  var src = ss.getSheetByName(slCfg.acctTab);
-  if (!src) return 'Bank balances: tab "' + slCfg.acctTab + '" not found — skipped.';
-  var vals = src.getDataRange().getValues();
-  if (vals.length < 2) return 'Bank balances: "' + slCfg.acctTab + '" is empty.';
+// Pull real balances from SheetLink's accounts/balances tab into our Account Summary.
+// What it does (the v2.6 fix):
+//   1. Locate SheetLink's balance tab by signature (not by a name SheetLink ignores).
+//   2. Trim its stale appended snapshots → keep only the latest sync.
+//   3. Read each account's real `current_balance`, signing credit/loan as DEBT (negative)
+//      so a card you owe $1,703 on reads -1703.33 and subtracts from net worth.
+//   4. Upsert one clean row per account (clean name, Type, Bank Balance) into Account
+//      Summary, preserving any Opening Balance the user typed.
+// Returns a short status line for the sync summary.
+function syncBalances_(ss) {
+  var src = findBalancesSheet_(ss);
+  if (!src) return 'Bank balances: no SheetLink balances tab found — skipped.';
+
+  var head0 = src.getRange(1, 1, 1, Math.min(src.getLastColumn(), 40)).getValues()[0];
   var head = {};
-  for (var c = 0; c < vals[0].length; c++) head[String(vals[0][c]).trim().toLowerCase()] = c;
-  var nameCol = firstCol_(head, ['account_name', 'account', 'name']);
-  var balCol = firstCol_(head, ['current_balance', 'balance', 'current', 'available_balance', 'available']);
-  if (nameCol === -1 || balCol === -1)
-    return 'Bank balances: name/balance columns not found in "' + slCfg.acctTab + '".';
-  var bal = {};
+  for (var c = 0; c < head0.length; c++) head[String(head0[c]).trim().toLowerCase()] = c;
+  var nameCol = firstCol_(head, ['account_name', 'name']);
+  var balCol = firstCol_(head, ['current_balance', 'balance', 'current']);
+  var subCol = firstCol_(head, ['subtype', 'account_subtype', 'account_type', 'type']);
+  var tsCol = firstCol_(head, ['last_synced_at', 'last_synced', 'synced_at', 'updated_at']);
+  if (balCol === -1) return 'Bank balances: no current_balance column in "' + src.getName() + '".';
+
+  var trimmed = trimBalancesSnapshot_(src, tsCol, balCol);
+
+  var vals = src.getDataRange().getValues();
+  var order = [], info = {};
   for (var i = 1; i < vals.length; i++) {
-    var nm = String(vals[i][nameCol]).trim();
-    if (nm) bal[nm] = money_(vals[i][balCol]);
+    if (String(vals[i][balCol]).trim() === '') continue;
+    var nm = cleanAcctName_(balanceName_(vals[i], nameCol));
+    if (!nm) continue;
+    var sub = subCol !== -1 ? String(vals[i][subCol]).toLowerCase() : '';
+    var isCredit = sub.indexOf('credit') !== -1 || sub.indexOf('loan') !== -1;
+    var raw = money_(vals[i][balCol]);
+    // Plaid reports a credit card's current_balance as a POSITIVE amount owed → debt.
+    var signed = isCredit ? -Math.abs(raw) : raw;
+    if (!(nm in info)) order.push(nm);
+    info[nm] = { type: isCredit ? 'Credit' : 'Cash', bal: signed };  // latest wins
   }
+
   var acct = ss.getSheetByName(SHEETS.ACCT);
-  if (!acct) return 'Bank balances: Accounts tab missing.';
+  if (!acct) return 'Bank balances: "' + SHEETS.ACCT + '" tab missing — run Rebuild first.';
   var aMax = acct.getMaxRows();
-  var names = (aMax >= 2) ? acct.getRange(2, 1, aMax - 1, 1).getValues() : [];
-  var written = 0;
-  for (var r = 0; r < names.length; r++) {
-    var nm2 = String(names[r][0]).trim();
-    if (nm2 && bal.hasOwnProperty(nm2)) {
-      acct.getRange(r + 2, 5).setValue(bal[nm2]);   // col E = Bank Balance
-      written++;
-    }
+  var existing = (aMax >= 2) ? acct.getRange(2, 1, aMax - 1, 1).getValues() : [];
+  var rowOf = {}, lastRow = 1;
+  for (var r = 0; r < existing.length; r++) {
+    var en = String(existing[r][0]).trim();
+    if (en) { rowOf[en] = r + 2; lastRow = r + 2; }
   }
-  return 'Bank balances: updated ' + written + ' account(s) from "' + slCfg.acctTab + '".';
+  var written = 0;
+  for (var o = 0; o < order.length; o++) {
+    var name = order[o], it = info[name];
+    var row = rowOf[name];
+    if (!row) { row = ++lastRow; rowOf[name] = row; acct.getRange(row, 1).setValue(name); }
+    acct.getRange(row, 2).setValue(it.type);   // B = Type (Cash / Credit)
+    acct.getRange(row, 5).setValue(it.bal);    // E = Bank Balance (credit = negative)
+    written++;
+  }
+  ensureAccountFormulas_(acct, lastRow);
+  return 'Bank balances: ' + written + ' account(s) updated' +
+    (trimmed ? ' (kept latest snapshot, trimmed older)' : '') + '.';
+}
+
+// Make sure the Current Balance (D) and Δ (F) formulas exist for every used row,
+// in case the account list grew past the range buildAccounts_ pre-filled.
+function ensureAccountFormulas_(acct, lastRow) {
+  var tx = "'" + SHEETS.TX + "'";
+  for (var row = 2; row <= lastRow; row++) {
+    if (acct.getRange(row, 4).getFormula()) continue;
+    acct.getRange(row, 4).setFormula(
+      '=IF(A' + row + '="","",N(C' + row + ')' +
+      '+SUMIF(' + tx + '!F:F,A' + row + '&"*",' + tx + '!D:D)' +
+      '-SUMIF(' + tx + '!F:F,A' + row + '&"*",' + tx + '!E:E))'
+    ).setNumberFormat(CURRENCY);
+    acct.getRange(row, 6).setFormula(
+      '=IF(OR(A' + row + '="",E' + row + '=""),"",E' + row + '-D' + row + ')'
+    ).setNumberFormat(CURRENCY);
+  }
 }
 
 // ---- Write cleaned rows into the Transactions tab ----------------
@@ -1321,8 +1478,8 @@ function syncAccountsFromTx_(ss) {
   var tVals = (tMax >= 2) ? tx.getRange(2, 6, tMax - 1, 2).getValues() : [];  // F=Account, G=Type
   var add = [], seen = {};
   for (var j = 0; j < tVals.length; j++) {
-    var name = tVals[j][0], type = tVals[j][1] || 'Cash';
-    if (name === '' || name === null || have[name] || seen[name]) continue;
+    var name = cleanAcctName_(tVals[j][0]), type = tVals[j][1] || 'Cash';
+    if (name === '' || have[name] || seen[name]) continue;
     seen[name] = true;
     add.push([name, type]);
   }

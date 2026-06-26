@@ -6,8 +6,8 @@ A personal finance tracker for Google Sheets. It comes in two forms:
    you can import into Google Sheets in under a minute. Live formulas
    (running balance, totals, category breakdown) come along with the import.
 2. **`apps-script/Code.gs`** — a Google Apps Script that builds the **full
-   multi-tab tracker**: Clean Transactions, an **Accounts** tab that turns opening
-   balances into live per-account balances, a Dashboard with **weekly & monthly**
+   multi-tab tracker**: Clean Transactions, an **Account Summary** tab that shows real
+   per-account balances from the bank feed (credit cards as debt), a Dashboard with **weekly & monthly**
    summaries plus **Cash / Credit / Net-worth** standing totals, **Recurring**
    monthly expenses, savings **Goals** (vacations, etc.), a **Categories** config
    tab that drives dropdowns and budgets, and a **built-in CSV importer**
@@ -79,8 +79,8 @@ refreshes headers, formulas and formatting.
 | Tab | What it does |
 |-----|--------------|
 | **Clean Transactions** | Your curated ledger, ordered **newest-first** (latest transaction at the top, oldest at the bottom — like a bank statement), with category dropdown, **Account** and **Type** (Cash/Credit) columns, currency formatting and a guarded running-cumulative-net formula. The **Balance** column accumulates from the bottom up, so the top row shows your current global net. Transfers between your own accounts carry the category **`Transfer`** so they move balances without distorting spend totals. A **filter** sits on the header — filter the **Account** column to one account (e.g. `Checking 3620`) to review it alone, and fix any row's **Category** by hand (the dropdown includes `Transfer`). Hand edits stick: re-importing never overwrites a row already in the sheet. *(The SheetLink add-on writes its **raw** feed to a separate tab named **`Transactions`**; Sync from SheetLink cleans that into this ledger — see below.)* |
-| **Accounts** | One row per account (pre-seeded). Enter each **Opening Balance** — what it held before your first imported transaction; **credit cards are negative** (e.g. `-10000`). The **Current Balance** then derives automatically as *Opening + that account's income − expenses* (transfers included). When using the SheetLink feed, a **Bank Balance** column shows the real balance from the bank and **Δ Bank − Computed** flags any account that doesn't reconcile (missing transactions). |
-| **Dashboard** | Three standing balances — **Cash on hand**, **Credit (debt)** and **Net worth (all)** — from the Accounts tab; all-time income/expense/net and **last 12 months / 12 weeks** summaries (transfers excluded); category spend-vs-budget for the current month (overspend highlighted). Plus three charts: **cashflow over time**, **category spend pie**, and **goals progress**. ⚠️ Until you set Opening Balances (below), the cash figure is labelled **"Net change since import"** — it's the change since your first import, *not* your real cash. |
+| **Account Summary** | One clean row per account, written from the bank feed (clean names — no cryptic IDs or doubled `••••1234` masks). **Bank Balance** is the account's **real** balance from the feed, with **credit cards shown as negative debt** (a card you owe $1,703 on reads `-1703.33`). **Net worth is driven by this column.** **Current Balance** (= *Opening + that account's income − expenses*) and **Δ Bank − Computed** are kept for reconciliation — a non-zero Δ flags an account whose transactions are incomplete. Optionally enter an **Opening Balance** to calibrate the transaction-derived figure. *(SheetLink writes its raw balance dump to a separate tab named **`Accounts`**; Sync reads the latest snapshot from it and trims the older ones.)* |
+| **Dashboard** | Three standing balances — **Cash on hand**, **Credit (debt)** and **Net worth (all)** — from real feed balances on **Account Summary**; all-time income/expense/net and **last 12 months / 12 weeks** summaries (transfers excluded); category spend-vs-budget for the current month (overspend highlighted). Plus three charts: **cashflow over time**, **category spend pie**, and **goals progress**. ⚠️ Before your first sync (no Bank Balance yet) the cash figure falls back to **"Net change since import"** — the change since your first import, *not* your real cash. |
 | **Recurring** | Monthly recurring bills (name, category, amount, due day, active checkbox) with an annual projection and monthly/annual totals. |
 | **Goals** | Savings/earnings goals (e.g. vacations): target amount & date, saved so far, monthly contribution, with computed remaining, % complete, months left and an on-track flag. |
 | **Categories** | Edit this list to change the dropdown options and per-category monthly budgets used by the Dashboard. |
@@ -111,12 +111,18 @@ it pulls *every* account automatically, you get **both legs of every transfer** 
 nothing is skipped, which is what keeps per-account balances honest (no more
 phantom surpluses from a missing month).
 
-> **Two tabs, by design.** SheetLink always writes its feed to a tab it names
-> **`Transactions`** (you choose the *file* it writes into, not the tab name). So
-> point SheetLink at **this** spreadsheet and let that be the **raw feed**. Your
-> curated ledger lives on a **separate** tab called **`Clean Transactions`** that the
-> Rebuild step creates — that's where Sync from SheetLink writes the cleaned rows,
-> and what the Dashboard/Accounts read. Don't rename either tab.
+> **Raw vs. clean tabs, by design.** SheetLink hard-codes the names of the tabs it
+> writes — **`Transactions`** (the raw transaction feed) and **`Accounts`** (its raw
+> balance dump) — and you only choose the *file*, not the tab names. So we let SheetLink
+> **own those two tabs as raw feeds** and keep our curated views on **separate** tabs it
+> never touches:
+> - **`Transactions`** (SheetLink, raw) → **`Clean Transactions`** (ours, curated ledger).
+> - **`Accounts`** (SheetLink, raw balances) → **`Account Summary`** (ours, one clean row
+>   per account with real balances).
+>
+> The Dashboard reads only the clean tabs. Don't rename them. (Earlier versions named our
+> summary `Accounts`, which collided with SheetLink's — Rebuild migrates it to
+> `Account Summary` automatically.)
 
 **One-time setup:**
 
@@ -125,11 +131,10 @@ phantom surpluses from a missing month).
    Truist, the cards, etc.). Let it write its **`Transactions`** tab (and, ideally,
    its balances tab).
 2. Run **Finance ▸ Rebuild tracker** — this creates the **`Clean Transactions`**
-   ledger and makes the **Settings** and **Accounts** tabs carry the feed fields.
-   The Settings default **SheetLink transactions tab = `Transactions`** already
-   points at SheetLink's feed, so there's usually nothing to change.
-3. *(Only if your balances tab has a non-default name)* set **SheetLink accounts
-   tab** on the **Settings** tab to the exact name SheetLink created.
+   ledger and the **`Account Summary`** tab. The Settings default **SheetLink
+   transactions tab = `Transactions`** already points at SheetLink's feed, so there's
+   usually nothing to change. (The balances tab is found automatically by its columns —
+   no name to configure.)
 
 **Each sync (or let it run automatically):**
 
@@ -138,11 +143,17 @@ phantom surpluses from a missing month).
    transfers between your own accounts tagged `Transfer`, categories mapped, and
    each row de-duped by its stable bank `transaction_id`. Your hand-labels are
    preserved. The summary reports what was added.
-5. The **Accounts** tab fills a **Bank Balance** column (the real balance from the
-   feed) and a **Δ Bank − Computed** column. With Opening Balance at 0, that Δ is
-   simply each account's true starting balance — **copy it into Opening Balance to
-   calibrate**. After that, any account whose Δ stays non-zero is flagged red,
-   meaning transactions are missing from the feed for that account.
+5. The **`Account Summary`** tab is rebuilt as **one clean row per account** — clean
+   names (no cryptic IDs, no doubled `••••1234` masks), the right **Type**, and a
+   **Bank Balance** that is the account's **real** balance from the feed. **Credit cards
+   show as negative (debt)** — a card you owe $1,703 on reads `-1703.33`. **Net worth on
+   the Dashboard is driven by these real balances**, so card debt always counts even if
+   some of a card's purchases haven't synced yet. The **Current Balance** /
+   **Δ Bank − Computed** columns are kept only for reconciliation: a non-zero Δ flags an
+   account whose transactions are incomplete in the feed.
+   - SheetLink re-appends a fresh copy of every account on each sync; **Sync from
+     SheetLink trims those stale snapshots automatically**, keeping only the latest, so
+     its `Accounts` tab stops growing without bound.
 
 > **Sign check (do once):** banks/Plaid sign money *leaving* as positive. After
 > your first sync, glance at one row — if a known **deposit** shows up as an
@@ -195,18 +206,20 @@ SheetLink ship in the box), so more banks can be added later without a rewrite.
    already in the sheet are **added** (matched on a hidden `Ref` column); the
    summary shows how many were added vs. already present. The ledger re-sorts by
    date, the running **Balance** recomputes, and any new account/card is
-   auto-added to the **Accounts** tab.
-5. On the **Accounts** tab, fill each **Opening Balance** (what the account held
+   auto-added to the **Account Summary** tab.
+5. On the **Account Summary** tab, fill each **Opening Balance** (what the account held
    before your first transaction; **credit cards negative**). The **Current
    Balance** and the Dashboard's Cash / Credit / Net-worth totals update
-   automatically. *(One-time — opening balances stay put after this.)*
+   automatically. *(One-time — opening balances stay put after this. With the SheetLink
+   feed connected, Bank Balance fills these in for you and net worth needs no opening
+   balances at all.)*
 
 ### What the importer does
 
 - **splits the signed `Amount`** into Income/Expense;
 - **tags each row with its Account and Type** — the bank account name (e.g.
   `Checking 1234`, `Visa Credit Card`) and whether it's `Cash` or `Credit`,
-  so the **Accounts** tab can derive per-account balances;
+  so the **Account Summary** tab can derive per-account balances;
 - **labels money between your own accounts `Transfer`** — when a row's description
   names **you** (any entry in **Your name** or **Your handles & account numbers** on
   the Settings tab), it's a move between your own accounts, not a real payment, so it's
