@@ -1269,10 +1269,11 @@ function syncFromSheetLink() {
 // What it does (the v2.6 fix):
 //   1. Locate SheetLink's balance tab by signature (not by a name SheetLink ignores).
 //   2. Trim its stale appended snapshots → keep only the latest sync.
-//   3. Read each account's real `current_balance`, signing credit/loan as DEBT (negative)
-//      so a card you owe $1,703 on reads -1703.33 and subtracts from net worth.
-//   4. Upsert one clean row per account (clean name, Type, Bank Balance) into Account
-//      Summary, preserving any Opening Balance the user typed.
+//   3. Pick the right balance per account: credit/loan use `current_balance` signed as
+//      DEBT (negative), so a card you owe $1,703 on reads -1703.33; cash accounts use the
+//      AVAILABLE balance (spendable = posted − pending, what your bank app shows) when the
+//      feed provides it, else current_balance.
+//   4. Upsert one clean row per account (clean name, Type, Balance) into Account Summary.
 // Returns a short status line for the sync summary.
 function syncBalances_(ss) {
   var src = findBalancesSheet_(ss);
@@ -1289,17 +1290,27 @@ function syncBalances_(ss) {
 
   var trimmed = trimBalancesSnapshot_(src, tsCol, balCol);
 
+  var availCol = firstCol_(head, ['available_balance', 'available']);
   var vals = src.getDataRange().getValues();
   var order = [], info = {};
   for (var i = 1; i < vals.length; i++) {
-    if (String(vals[i][balCol]).trim() === '') continue;
+    var curStr = String(vals[i][balCol]).trim();
+    var availStr = availCol !== -1 ? String(vals[i][availCol]).trim() : '';
+    if (curStr === '' && availStr === '') continue;            // no balance at all
     var nm = cleanAcctName_(balanceName_(vals[i], nameCol));
     if (!nm) continue;
     var sub = subCol !== -1 ? String(vals[i][subCol]).toLowerCase() : '';
     var isCredit = sub.indexOf('credit') !== -1 || sub.indexOf('loan') !== -1;
-    var raw = money_(vals[i][balCol]);
-    // Plaid reports a credit card's current_balance as a POSITIVE amount owed → debt.
-    var signed = isCredit ? -Math.abs(raw) : raw;
+    var signed;
+    if (isCredit) {
+      // Credit cards: current_balance is the POSITIVE amount owed → show as debt.
+      // (available_balance on a card is the spending room left, NOT what you owe.)
+      signed = -Math.abs(money_(vals[i][balCol]));
+    } else {
+      // Cash accounts: prefer AVAILABLE balance (what your bank app shows as spendable —
+      // posted minus pending) when the feed provides it; else fall back to current.
+      signed = (availStr !== '') ? money_(vals[i][availCol]) : money_(vals[i][balCol]);
+    }
     if (!(nm in info)) order.push(nm);
     info[nm] = { type: isCredit ? 'Credit' : 'Cash', bal: signed };  // latest wins
   }
