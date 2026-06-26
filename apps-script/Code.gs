@@ -586,7 +586,14 @@ var SETTINGS_ROWS = [
   ['SheetLink amount sign', ['out=positive'],
     'How the feed signs amounts. Plaid/SheetLink default is "out=positive" ' +
     '(money leaving = positive). If after a sync a DEPOSIT shows up as an ' +
-    'Expense, change this to "in=positive" and sync again.']
+    'Expense, change this to "in=positive" and sync again.'],
+  ['Invert amount sign for (accounts)', ['DISCOVER'],
+    'Account-name keywords whose amounts the feed signs BACKWARDS — a known Plaid ' +
+    'quirk (Discover credit cards report the opposite sign to everything else). ' +
+    'Any account whose name contains one of these has its amounts flipped, AFTER ' +
+    'the global amount-sign toggle above. Substring, case-insensitive. Keep only ' +
+    'accounts that actually show reversed (e.g. a purchase booked as Income) — ' +
+    'remove DISCOVER if yours already imports correctly.']
 ];
 
 // Single-value (scalar) Settings rows read raw (case preserved), separate from
@@ -613,7 +620,8 @@ var SETTINGS_KEYS = {
   'Own cards (rail-paid)': 'ownCards',
   'Card pay rails': 'cardPayRails',
   'Own card issuers (name-only)': 'ownCardIssuers',
-  'Lenders (loan in / repayment out)': 'lenders'
+  'Lenders (loan in / repayment out)': 'lenders',
+  'Invert amount sign for (accounts)': 'invertSignAccounts'
 };
 
 // Look up a SETTINGS_ROWS entry by its label → { vals, note } (empty if absent).
@@ -684,7 +692,8 @@ function readSettings_(ss) {
     ownCards: [],
     cardPayRails: ['INTERNET PAYMENT', 'E-PAYMENT', 'EPAYMENT', 'ONLINE PAYMENT', 'AUTOPAY', 'BILL PAYMENT'],
     ownCardIssuers: [],
-    lenders: []
+    lenders: [],
+    invertSignAccounts: []
   };
   var sheet = ss.getSheetByName(SHEETS.SETTINGS);
   if (!sheet || sheet.getLastRow() < 2 || sheet.getLastColumn() < 2) return cfg;
@@ -1040,6 +1049,13 @@ function parseSheetLink_(values, cfg) {
     var name = String(get('name')).trim();
     var merch = String(get('merchant')).trim() || name;
     var account = String(get('account')).trim() || 'Unknown';
+    // Some institutions (e.g. Discover) sign amounts BACKWARDS vs the rest of the
+    // feed, so a purchase would land as Income. Flip such accounts after the global
+    // toggle — see the "Invert amount sign for (accounts)" Settings row.
+    if (cfg.invertSignAccounts && cfg.invertSignAccounts.length &&
+        anyIn_(account.toUpperCase(), cfg.invertSignAccounts)) {
+      inflow = round2_(-inflow);
+    }
     var atypeRaw = String(get('accountType')).trim().toLowerCase();
     var atype = (atypeRaw.indexOf('credit') !== -1 || atypeRaw.indexOf('loan') !== -1) ? 'Credit' : 'Cash';
     var date = toYmd_(rawDate);

@@ -148,6 +148,12 @@ phantom surpluses from a missing month).
 > your first sync, glance at one row — if a known **deposit** shows up as an
 > **Expense**, set **SheetLink amount sign** to `in=positive` on the Settings tab
 > and sync again. That's the only thing that ever needs adjusting.
+>
+> **Per-account exception:** some institutions sign *one* account backwards while
+> the rest are fine — **Discover** credit cards are the known case (a purchase
+> lands as Income). List such accounts in **Invert amount sign for (accounts)** on
+> the Settings tab (seeded with `DISCOVER`); their amounts are flipped after the
+> global toggle. Remove `DISCOVER` if yours already imports correctly.
 
 > **Stop deleting transfers** in any upstream app. The Sheet tags transfers itself
 > and needs **both legs** to keep balances correct — deleting one side is what
