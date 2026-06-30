@@ -230,6 +230,10 @@ function buildAccounts_(ss) {
     sheet.getRange(1, 4, sheet.getMaxRows(), sheet.getLastColumn() - 3).clearContent()
       .clearFormat().clearDataValidations();
   }
+  // Wipe any existing account rows too, so a Rebuild starts clean and the next Sync
+  // re-mirrors the feed exactly — no stale/ghost accounts carried over.
+  var lr = sheet.getLastRow();
+  if (lr >= 2) sheet.getRange(2, 1, lr - 1, 3).clearContent();
   header_(sheet, ['Account', 'Type', 'Balance']);
   sheet.getRange('C1').setNote(
     'Balance is the REAL balance from the bank feed (filled by Finance ▸ Sync from ' +
@@ -238,8 +242,8 @@ function buildAccounts_(ss) {
   sheet.getRange('C2:C').setNumberFormat(CURRENCY);
   applyListValidation_(sheet, 'B2:B', ['Cash', 'Credit']);
 
-  // No example seed rows: real accounts are written here by syncBalances_ from the live
-  // feed, and any ledger-only accounts (no feed balance) by syncAccountsFromTx_.
+  // No example seed rows: real accounts are written (full rewrite) by syncBalances_ from
+  // the live feed, so this table always mirrors the current accounts exactly.
   sheet.setColumnWidth(1, 220);
   sheet.setColumnWidth(2, 90);
   sheet.setColumnWidth(3, 140);
@@ -1248,8 +1252,7 @@ function syncFromSheetLink() {
     return;
   }
   var w = writeTransactions_(ss, res.rows);
-  var balMsg = syncBalances_(ss);   // feed balances are the master account list
-  syncAccountsFromTx_(ss);          // add any ledger-only accounts the feed lacks
+  var balMsg = syncBalances_(ss);   // feed is the master account list — exact mirror, full rewrite
   var s = res.stats;
   ss.toast('Added ' + w.added + ' new (' + w.skipped + ' already present).',
     'SheetLink sync complete', 6);
@@ -1317,24 +1320,22 @@ function syncBalances_(ss) {
 
   var acct = ss.getSheetByName(SHEETS.ACCT);
   if (!acct) return 'Bank balances: "' + SHEETS.ACCT + '" tab missing — run Rebuild first.';
-  var aMax = acct.getMaxRows();
-  var existing = (aMax >= 2) ? acct.getRange(2, 1, aMax - 1, 1).getValues() : [];
-  var rowOf = {}, lastRow = 1;
-  for (var r = 0; r < existing.length; r++) {
-    var en = String(existing[r][0]).trim();
-    if (en) { rowOf[en] = r + 2; lastRow = r + 2; }
-  }
-  var written = 0;
+  // FULL REWRITE each sync so the table MIRRORS the current feed exactly: wipe every old
+  // row first (no ghosts from prior syncs / old name-forms, no duplicates), then write the
+  // current snapshot. This is what keeps the count and values matching SheetLink's feed.
+  var lastRow = acct.getLastRow();
+  if (lastRow >= 2) acct.getRange(2, 1, lastRow - 1, 3).clearContent();
+  var outRows = [];
   for (var o = 0; o < order.length; o++) {
-    var name = order[o], it = info[name];
-    var row = rowOf[name];
-    if (!row) { row = ++lastRow; rowOf[name] = row; acct.getRange(row, 1).setValue(name); }
-    acct.getRange(row, 2).setValue(it.type);                      // B = Type (Cash / Credit)
-    acct.getRange(row, 3).setValue(it.bal).setNumberFormat(CURRENCY); // C = Balance (credit negative)
-    written++;
+    var it = info[order[o]];
+    outRows.push([order[o], it.type, it.bal]);   // Account | Type | Balance
   }
-  return 'Bank balances: ' + written + ' account(s) updated' +
-    (trimmed ? ' (kept latest snapshot, trimmed older)' : '') + '.';
+  if (outRows.length) {
+    acct.getRange(2, 1, outRows.length, 3).setValues(outRows);
+    acct.getRange(2, 3, outRows.length, 1).setNumberFormat(CURRENCY);
+  }
+  return 'Bank balances: ' + outRows.length + ' account(s) — full refresh' +
+    (trimmed ? ', latest snapshot' : '') + '.';
 }
 
 // ---- Write cleaned rows into the Transactions tab ----------------
