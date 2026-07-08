@@ -1287,11 +1287,16 @@ function syncBalances_(ss) {
     var row = latest[nm].row;
     var curStr = String(row[balCol]).trim();
     var availStr = availCol !== -1 ? String(row[availCol]).trim() : '';
-    if (curStr === '' && availStr === '') continue;            // account has no balance
-    var sub = subCol !== -1 ? String(row[subCol]).toLowerCase() : '';
+    var sub = subCol !== -1 ? String(row[subCol]).trim().toLowerCase() : '';
+    // Show every REAL account (a row with a subtype), even if the feed sent no balance yet
+    // (e.g. just-reconnected) — a visible account with a blank balance beats a vanished
+    // one. Skip only rows that are neither a real account nor carry a balance (junk/spacers).
+    if (curStr === '' && availStr === '' && sub === '') continue;
     var isCredit = sub.indexOf('credit') !== -1 || sub.indexOf('loan') !== -1;
     var signed;
-    if (isCredit) {
+    if (curStr === '' && availStr === '') {
+      signed = '';                                             // real account, balance pending
+    } else if (isCredit) {
       // Credit cards: current_balance is the POSITIVE amount owed → show as debt.
       // (available_balance on a card is the spending room left, NOT what you owe.)
       signed = -Math.abs(money_(row[balCol]));
