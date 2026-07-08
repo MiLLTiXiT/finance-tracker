@@ -1180,32 +1180,6 @@ function balanceName_(row, nameCol) {
   return '';
 }
 
-// Delete SheetLink's STALE balance snapshots in place: SheetLink appends a fresh full
-// copy of every account on each sync (keyed by last_synced_at) and never removes the
-// old ones, so the tab grows without bound. Keep header + rows from the most recent
-// sync (rows that actually carry a balance); drop everything older. Returns kept count.
-function trimBalancesSnapshot_(sheet, tsCol, balCol) {
-  var vals = sheet.getDataRange().getValues();
-  if (vals.length < 2) return 0;
-  var latest = '';
-  if (tsCol !== -1) {
-    for (var i = 1; i < vals.length; i++) {
-      var t = String(vals[i][tsCol]).trim();
-      if (t > latest) latest = t;
-    }
-  }
-  var keep = [vals[0]];
-  for (var j = 1; j < vals.length; j++) {
-    var hasBal = balCol !== -1 && String(vals[j][balCol]).trim() !== '';
-    var tsOk = (tsCol === -1) || (String(vals[j][tsCol]).trim() === latest);
-    if (hasBal && tsOk) keep.push(vals[j]);
-  }
-  if (keep.length === vals.length) return keep.length - 1;   // nothing stale
-  sheet.clearContents();
-  sheet.getRange(1, 1, keep.length, keep[0].length).setValues(keep);
-  return keep.length - 1;
-}
-
 // Find the SheetLink transactions sheet: try the configured name, else scan all
 // non-tracker sheets for one whose header looks like a SheetLink feed.
 function findSheetLinkSheet_(ss, configuredName) {
@@ -1269,9 +1243,10 @@ function syncFromSheetLink() {
 }
 
 // Pull real balances from SheetLink's accounts/balances tab into our Account Summary.
-// What it does (the v2.6 fix):
+// SheetLink OWNS its tab — we only READ it, never write to or reformat it.
+// What it does:
 //   1. Locate SheetLink's balance tab by signature (not by a name SheetLink ignores).
-//   2. Trim its stale appended snapshots → keep only the latest sync.
+//   2. Pick the newest snapshot per account IN MEMORY (SheetLink re-appends every sync).
 //   3. Pick the right balance per account: credit/loan use `current_balance` signed as
 //      DEBT (negative), so a card you owe $1,703 on reads -1703.33; cash accounts use the
 //      AVAILABLE balance (spendable = posted − pending, what your bank app shows) when the
@@ -1291,31 +1266,42 @@ function syncBalances_(ss) {
   var tsCol = firstCol_(head, ['last_synced_at', 'last_synced', 'synced_at', 'updated_at']);
   if (balCol === -1) return 'Bank balances: no current_balance column in "' + src.getName() + '".';
 
-  var trimmed = trimBalancesSnapshot_(src, tsCol, balCol);
-
   var availCol = firstCol_(head, ['available_balance', 'available']);
   var vals = src.getDataRange().getValues();
-  var order = [], info = {};
+
+  // READ-ONLY: SheetLink owns this tab, so we never modify it. It re-appends a full
+  // snapshot each sync, so we pick the NEWEST row per account here IN MEMORY (by
+  // last_synced_at) instead of deleting its older rows.
+  var latest = {};   // clean name -> { ts, row } of the newest snapshot for that account
   for (var i = 1; i < vals.length; i++) {
-    var curStr = String(vals[i][balCol]).trim();
-    var availStr = availCol !== -1 ? String(vals[i][availCol]).trim() : '';
-    if (curStr === '' && availStr === '') continue;            // no balance at all
-    var nm = cleanAcctName_(balanceName_(vals[i], nameCol));
-    if (!nm) continue;
-    var sub = subCol !== -1 ? String(vals[i][subCol]).toLowerCase() : '';
+    var nm0 = cleanAcctName_(balanceName_(vals[i], nameCol));
+    if (!nm0) continue;
+    var ts = tsCol !== -1 ? String(vals[i][tsCol]).trim() : '';
+    if (latest.hasOwnProperty(nm0) && ts <= latest[nm0].ts) continue;
+    latest[nm0] = { ts: ts, row: vals[i] };
+  }
+
+  var order = [], info = {};
+  for (var nm in latest) {
+    if (!latest.hasOwnProperty(nm)) continue;
+    var row = latest[nm].row;
+    var curStr = String(row[balCol]).trim();
+    var availStr = availCol !== -1 ? String(row[availCol]).trim() : '';
+    if (curStr === '' && availStr === '') continue;            // account has no balance
+    var sub = subCol !== -1 ? String(row[subCol]).toLowerCase() : '';
     var isCredit = sub.indexOf('credit') !== -1 || sub.indexOf('loan') !== -1;
     var signed;
     if (isCredit) {
       // Credit cards: current_balance is the POSITIVE amount owed → show as debt.
       // (available_balance on a card is the spending room left, NOT what you owe.)
-      signed = -Math.abs(money_(vals[i][balCol]));
+      signed = -Math.abs(money_(row[balCol]));
     } else {
       // Cash accounts: prefer AVAILABLE balance (what your bank app shows as spendable —
       // posted minus pending) when the feed provides it; else fall back to current.
-      signed = (availStr !== '') ? money_(vals[i][availCol]) : money_(vals[i][balCol]);
+      signed = (availStr !== '') ? money_(row[availCol]) : money_(row[balCol]);
     }
-    if (!(nm in info)) order.push(nm);
-    info[nm] = { type: isCredit ? 'Credit' : 'Cash', bal: signed };  // latest wins
+    order.push(nm);
+    info[nm] = { type: isCredit ? 'Credit' : 'Cash', bal: signed };
   }
 
   var acct = ss.getSheetByName(SHEETS.ACCT);
@@ -1334,8 +1320,7 @@ function syncBalances_(ss) {
     acct.getRange(2, 1, outRows.length, 3).setValues(outRows);
     acct.getRange(2, 3, outRows.length, 1).setNumberFormat(CURRENCY);
   }
-  return 'Bank balances: ' + outRows.length + ' account(s) — full refresh' +
-    (trimmed ? ', latest snapshot' : '') + '.';
+  return 'Bank balances: ' + outRows.length + ' account(s) — full refresh (feed read-only).';
 }
 
 // ---- Write cleaned rows into the Transactions tab ----------------

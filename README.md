@@ -149,9 +149,9 @@ phantom surpluses from a missing month).
    cards negative (debt)** — a card you owe $1,703 on reads `-1703.33`. **Net worth on
    the Dashboard is the sum of this column**, so card debt always counts even if some of
    a card's purchases haven't synced yet.
-   - SheetLink re-appends a fresh copy of every account on each sync; **Sync from
-     SheetLink trims those stale snapshots automatically**, keeping only the latest, so
-     its `Accounts` tab stops growing without bound.
+   - SheetLink re-appends a fresh copy of every account on each sync; we **read that tab
+     read-only** (SheetLink owns it) and pick the **newest snapshot per account** in
+     memory, so Account Summary is always current no matter how many snapshots pile up.
 
 > **Sign check (do once):** banks/Plaid sign money *leaving* as positive. After
 > your first sync, glance at one row — if a known **deposit** shows up as an
