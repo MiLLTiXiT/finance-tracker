@@ -230,10 +230,10 @@ function buildAccounts_(ss) {
     sheet.getRange(1, 4, sheet.getMaxRows(), sheet.getLastColumn() - 3).clearContent()
       .clearFormat().clearDataValidations();
   }
-  // Wipe any existing account rows too, so a Rebuild starts clean and the next Sync
-  // re-mirrors the feed exactly — no stale/ghost accounts carried over.
-  var lr = sheet.getLastRow();
-  if (lr >= 2) sheet.getRange(2, 1, lr - 1, 3).clearContent();
+  // NOTE: we do NOT wipe existing account rows here. syncBalances_ full-rewrites them on
+  // every SUCCESSFUL sync (removing ghosts), so leaving them alone on Rebuild means a
+  // failed/empty sync (e.g. SheetLink's tab header got damaged) never leaves you staring
+  // at a blank Account Summary — the last good values stay until a good sync replaces them.
   header_(sheet, ['Account', 'Type', 'Balance']);
   sheet.getRange('C1').setNote(
     'Balance is the REAL balance from the bank feed (filled by Finance ▸ Sync from ' +
@@ -1255,7 +1255,8 @@ function syncFromSheetLink() {
 // Returns a short status line for the sync summary.
 function syncBalances_(ss) {
   var src = findBalancesSheet_(ss);
-  if (!src) return 'Bank balances: no SheetLink balances tab found — skipped.';
+  if (!src) return 'Bank balances: SheetLink balances tab not found — kept existing. ' +
+    'In SheetLink click Sync Now so it (re)writes its Accounts tab, then sync again.';
 
   var head0 = src.getRange(1, 1, 1, Math.min(src.getLastColumn(), 40)).getValues()[0];
   var head = {};
@@ -1264,7 +1265,9 @@ function syncBalances_(ss) {
   var balCol = firstCol_(head, ['current_balance', 'balance', 'current']);
   var subCol = firstCol_(head, ['subtype', 'account_subtype', 'account_type', 'type']);
   var tsCol = firstCol_(head, ['last_synced_at', 'last_synced', 'synced_at', 'updated_at']);
-  if (balCol === -1) return 'Bank balances: no current_balance column in "' + src.getName() + '".';
+  if (balCol === -1) return 'Bank balances: "' + src.getName() + '" has no balance-column ' +
+    'header (its header row may have been deleted). Kept existing balances. Fix: in SheetLink ' +
+    'click Sync Now so it rewrites the header, then sync again.';
 
   var availCol = firstCol_(head, ['available_balance', 'available']);
   var vals = src.getDataRange().getValues();
@@ -1272,19 +1275,21 @@ function syncBalances_(ss) {
   // READ-ONLY: SheetLink owns this tab, so we never modify it. It re-appends a full
   // snapshot each sync, so we pick the NEWEST row per account here IN MEMORY (by
   // last_synced_at) instead of deleting its older rows.
-  var latest = {};   // clean name -> { ts, row } of the newest snapshot for that account
+  var latest = {};   // UPPERCASE name key -> { ts, row, name } — newest snapshot per account
   for (var i = 1; i < vals.length; i++) {
     var nm0 = cleanAcctName_(balanceName_(vals[i], nameCol));
     if (!nm0) continue;
+    var key = nm0.toUpperCase();   // case/dupe-insensitive so a repeated account collapses to one
     var ts = tsCol !== -1 ? String(vals[i][tsCol]).trim() : '';
-    if (latest.hasOwnProperty(nm0) && ts <= latest[nm0].ts) continue;
-    latest[nm0] = { ts: ts, row: vals[i] };
+    if (latest.hasOwnProperty(key) && ts <= latest[key].ts) continue;
+    latest[key] = { ts: ts, row: vals[i], name: nm0 };
   }
 
   var order = [], info = {};
-  for (var nm in latest) {
-    if (!latest.hasOwnProperty(nm)) continue;
-    var row = latest[nm].row;
+  for (var key in latest) {
+    if (!latest.hasOwnProperty(key)) continue;
+    var nm = latest[key].name;
+    var row = latest[key].row;
     var curStr = String(row[balCol]).trim();
     var availStr = availCol !== -1 ? String(row[availCol]).trim() : '';
     var sub = subCol !== -1 ? String(row[subCol]).trim().toLowerCase() : '';
