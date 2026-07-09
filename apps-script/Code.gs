@@ -275,7 +275,7 @@ function buildRecurring_(ss, cats) {
       }
     }
   }
-  header_(sheet, ['Name', 'Category', 'Amount', 'Frequency', 'Due Day', 'Active', 'Annual']);
+  header_(sheet, ['Name', 'Category', 'Amount', 'Frequency', 'Due Day', 'Active', 'Annual', 'Paid']);
 
   // Annual projection (col G): Weekly = Amount*52; Monthly/Monthly split = Amount*12.
   var formulas = [];
@@ -295,9 +295,13 @@ function buildRecurring_(ss, cats) {
     '• Monthly — full amount in its due week\n' +
     '• Weekly — full amount every week\n' +
     '• Monthly split — monthly amount spread evenly across every week');
+  sheet.getRange('H1').setNote('Check when you have PAID this period\'s bill — it then drops ' +
+    'out of "Bills left this week" on the Goals tab. An unpaid bill keeps counting (rolls ' +
+    'over) until you check it. Uncheck it when the next period\'s bill comes due.');
 
-  // Active = checkbox (col F now)
+  // Active + Paid = checkboxes (cols F and H)
   sheet.getRange('F2:F').insertCheckboxes();
+  sheet.getRange('H2:H').insertCheckboxes();
 
   // Totals. Monthly-equivalent total treats Weekly as Amount*52/12.
   sheet.getRange('I1').setValue('Monthly recurring total').setFontWeight('bold');
@@ -328,11 +332,12 @@ function buildGoals_(ss) {
   var acct = "'" + SHEETS.ACCT + "'";
   var rec = "'" + SHEETS.RECUR + "'";
 
-  // Clear stale content in the top band (rows 1-8, cols C-J). Earlier versions put the
-  // goal formulas (Remaining/%/etc.) in F2:I100; with goals now starting at row 9, those
-  // old formulas would sit next to the Weekly Budget and throw #VALUE! (B2 is date text).
-  // The Weekly Budget lives in A:B and the week helpers in K:L, so C1:J8 is safe to wipe.
-  sheet.getRange('C1:J8').clearContent();
+  // Wipe stale content below the summary so old goal formulas / earlier layouts don't
+  // linger (they'd throw #VALUE! next to the budget). The summary is A1:B5 (kept); helpers
+  // live in K:L and N:Q (kept); the bill list (A7:C..) and Goals (row 30+) are rewritten
+  // after this. So clear C1:J5 (summary band) and A6:J29 (bill-list band).
+  sheet.getRange('C1:J5').clearContent();
+  sheet.getRange('A6:J29').clearContent();
 
   // --- Week bounds (Sunday..Saturday containing today), off to the side in K/L ---
   put_(sheet, 'K1', 'Week start');
@@ -349,37 +354,49 @@ function buildGoals_(ss) {
   sheet.getRange('B3').setFormula('=SUMIF(' + acct + '!B2:B,"Cash",' + acct + '!C2:C)')
     .setNumberFormat(CURRENCY);
   put_(sheet, 'A4', '🧾 Bills left this week', true);
-  // Three kinds of recurring items (cols: C=Amount, D=Frequency, E=Due Day, F=Active):
-  //   Weekly        → full amount every week.
-  //   Monthly split → Amount * 12/52 reserved each week.
-  //   Monthly       → full amount only in the week its Due Day falls (between today and
-  //                   the end of this week). Two DATE terms cover a month-boundary week;
-  //                   ">0" collapses the duplicate so it isn't counted twice.
-  var due =
-    '(((DATE(YEAR(TODAY()),MONTH(TODAY()),' + rec + '!E2:E200)>=TODAY())' +
-    '*(DATE(YEAR(TODAY()),MONTH(TODAY()),' + rec + '!E2:E200)<=$L$2))' +
-    '+((DATE(YEAR($L$2),MONTH($L$2),' + rec + '!E2:E200)>=TODAY())' +
-    '*(DATE(YEAR($L$2),MONTH($L$2),' + rec + '!E2:E200)<=$L$2))>0)';
-  sheet.getRange('B4').setFormula(
-    '=SUMPRODUCT((' + rec + '!F2:F200=TRUE)*(' + rec + '!D2:D200="Weekly")*N(' + rec + '!C2:C200))' +
-    '+SUMPRODUCT((' + rec + '!F2:F200=TRUE)*(' + rec + '!D2:D200="Monthly split")*N(' + rec + '!C2:C200))*(12/52)' +
-    '+SUMPRODUCT((' + rec + '!F2:F200=TRUE)*(' + rec + '!D2:D200="Monthly")*N(' + rec + '!C2:C200)*(N(' + rec + '!E2:E200)>=1)*--' + due + ')'
-  ).setNumberFormat(CURRENCY);
+  // Hidden helper cols N:Q compute, per recurring item: Name, a due label/date, the amount
+  // that hits THIS week, and a 1/0 "counts this week" flag. "Bills left this week" and the
+  // itemized list below both read these, so they always agree.
+  //   Weekly        → full amount every week (unless Paid).
+  //   Monthly split → Amount*12/52 reserved every week (a set-aside; Paid doesn't apply).
+  //   Monthly       → full amount if its due date is on/before this Saturday AND not Paid,
+  //                   so an unpaid bill keeps counting ("rolls over") until you tick Paid.
+  //   (Recurring cols: C=Amount, D=Frequency, E=Due Day, F=Active, H=Paid.)
+  sheet.getRange('N2').setFormula('=ARRAYFORMULA(IF(' + rec + '!A2:A200="","",' + rec + '!A2:A200))');
+  sheet.getRange('O2').setFormula('=ARRAYFORMULA(IF(' + rec + '!A2:A200="","",' +
+    'IF(' + rec + '!D2:D200="Weekly","Weekly",IF(' + rec + '!D2:D200="Monthly split","Reserve (wk)",' +
+    'IF(' + rec + '!D2:D200="Monthly",TEXT(DATE(YEAR(TODAY()),MONTH(TODAY()),' + rec + '!E2:E200),"ddd mmm d"),"")))))');
+  sheet.getRange('P2').setFormula('=ARRAYFORMULA(IF(' + rec + '!A2:A200="","",' +
+    'IF(' + rec + '!D2:D200="Monthly split",' + rec + '!C2:C200*12/52,' + rec + '!C2:C200)))');
+  sheet.getRange('Q2').setFormula('=ARRAYFORMULA((' + rec + '!F2:F200=TRUE)*(' +
+    '(' + rec + '!D2:D200="Weekly")*(' + rec + '!H2:H200<>TRUE)' +
+    '+(' + rec + '!D2:D200="Monthly split")' +
+    '+(' + rec + '!D2:D200="Monthly")*(' + rec + '!H2:H200<>TRUE)*(N(' + rec + '!E2:E200)>=1)' +
+    '*(((DATE(YEAR(TODAY()),MONTH(TODAY()),' + rec + '!E2:E200)<=$L$2)' +
+    '+(DATE(YEAR($L$2),MONTH($L$2),' + rec + '!E2:E200)<=$L$2))>0)))');
+  sheet.getRange('B4').setFormula('=SUMPRODUCT(N(P2:P200),N(Q2:Q200))').setNumberFormat(CURRENCY);
   put_(sheet, 'A5', '✅ Safe to spend', true);
   sheet.getRange('B5').setFormula('=B3-B4').setNumberFormat(CURRENCY)
     .setFontWeight('bold').setFontSize(12);
   sheet.getRange('A5:B5').setBackground('#d9ead3');
   sheet.getRange('A3').setNote('Sum of your Cash-type account balances (from Account Summary). ' +
     'Credit-card debt is not counted — this is spendable cash only.');
-  sheet.getRange('A4').setNote('From the Recurring tab (Active items): Weekly items count in ' +
-    'full every week; "Monthly split" items count their weekly share (amount ÷ 4.33); Monthly ' +
-    'items count in full only in the week their Due Day falls. Monthly bills already past this ' +
-    'week are excluded (assumed paid, already reflected in cash on hand).');
-  sheet.getRange('A5').setNote('Cash on hand minus the bills still due this week = what you can ' +
+  sheet.getRange('A4').setNote('Unpaid Active recurring items counting this week: Weekly (every ' +
+    'week), Monthly split (weekly share), and Monthly bills due on/before this Saturday. Ticking ' +
+    '"Paid" on the Recurring tab removes an item; an unpaid one keeps counting until you do.');
+  sheet.getRange('A5').setNote('Cash on hand minus the bills still owed this week = what you can ' +
     'safely spend for the rest of the week without missing a bill.');
 
-  // --- Savings Goals block (below, header on row 8) ---
-  var H = 8;
+  // --- Itemized "this week's bills" list (reads the same helper cols, so it matches B4) ---
+  sheet.getRange('A7').setValue('📋 This week’s bills (unpaid)').setFontWeight('bold');
+  sheet.getRange('A8:C8').setValues([['Bill', 'Due', 'Amount']]).setFontWeight('bold');
+  sheet.getRange('A9').setFormula(
+    '=IFERROR(FILTER({N2:N200,O2:O200,P2:P200},Q2:Q200=1),"— nothing due this week —")');
+  sheet.getRange('C9:C28').setNumberFormat(CURRENCY);
+  sheet.hideColumns(14, 4);   // hide helper cols N:Q
+
+  // --- Savings Goals block (below the bill list; header on row 30) ---
+  var H = 30;
   sheet.getRange(H - 1, 1).setValue('🎯 SAVINGS GOALS').setFontSize(14).setFontWeight('bold');
   var hdr = ['Goal', 'Target Amount', 'Target Date', 'Saved So Far',
              'Monthly Contribution', 'Remaining', '% Complete', 'Months Left', 'On Track?'];
