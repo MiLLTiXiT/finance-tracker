@@ -250,39 +250,54 @@ function buildAccounts_(ss) {
 }
 
 // ---- 3. Recurring expenses ---------------------------------------
+// Frequency (col D) decides how each item hits the Weekly Budget:
+//   Monthly        — full amount in the week its Due Day falls.
+//   Weekly         — full amount EVERY week (Due Day ignored).
+//   Monthly split  — the monthly amount spread evenly across weeks (Amount*12/52
+//                    reserved each week, so nothing lands as a big one-week hit).
 function buildRecurring_(ss, cats) {
   var sheet = getOrCreate_(ss, SHEETS.RECUR);
-  header_(sheet, ['Name', 'Category', 'Amount', 'Due Day', 'Active', 'Annual']);
+  header_(sheet, ['Name', 'Category', 'Amount', 'Frequency', 'Due Day', 'Active', 'Annual']);
 
-  // Annual projection: Amount * 12 when Active = TRUE.
+  // Annual projection (col G): Weekly = Amount*52; Monthly/Monthly split = Amount*12.
   var formulas = [];
   for (var r = 2; r <= 200; r++) {
-    formulas.push(['=IF(A' + r + '="","",IF(E' + r + '=TRUE,C' + r + '*12,0))']);
+    formulas.push(['=IF(A' + r + '="","",IF(F' + r + '=TRUE,C' + r +
+      '*IF(D' + r + '="Weekly",52,12),0))']);
   }
-  sheet.getRange(2, 6, formulas.length, 1).setFormulas(formulas);
+  sheet.getRange(2, 7, formulas.length, 1).setFormulas(formulas);
 
   sheet.getRange('C2:C').setNumberFormat(CURRENCY);
-  sheet.getRange('F2:F').setNumberFormat(CURRENCY);
+  sheet.getRange('G2:G').setNumberFormat(CURRENCY);
   applyCategoryValidation_(sheet, 'B2:B', cats);
+  applyListValidation_(sheet, 'D2:D', ['Monthly', 'Weekly', 'Monthly split']);
+  sheet.getRange('E1').setNote('Day of the month (1–31) the bill is due. Only used for ' +
+    '"Monthly" items — ignored for Weekly and Monthly split.');
+  sheet.getRange('D1').setNote('How this item recurs / is budgeted weekly:\n' +
+    '• Monthly — full amount in its due week\n' +
+    '• Weekly — full amount every week\n' +
+    '• Monthly split — monthly amount spread evenly across every week');
 
-  // Active = checkbox
-  sheet.getRange('E2:E').insertCheckboxes();
+  // Active = checkbox (col F now)
+  sheet.getRange('F2:F').insertCheckboxes();
 
-  // Totals row label + values just below a small block.
-  sheet.getRange('H1').setValue('Monthly recurring total').setFontWeight('bold');
-  sheet.getRange('I1').setFormula('=SUMIF(E2:E,TRUE,C2:C)').setNumberFormat(CURRENCY);
-  sheet.getRange('H2').setValue('Annual recurring total').setFontWeight('bold');
-  sheet.getRange('I2').setFormula('=SUM(F2:F)').setNumberFormat(CURRENCY);
+  // Totals. Monthly-equivalent total treats Weekly as Amount*52/12.
+  sheet.getRange('I1').setValue('Monthly recurring total').setFontWeight('bold');
+  sheet.getRange('J1').setFormula('=SUMPRODUCT((F2:F200=TRUE),N(C2:C200),' +
+    '((D2:D200="Weekly")*(52/12)+(D2:D200<>"Weekly")))').setNumberFormat(CURRENCY);
+  sheet.getRange('I2').setValue('Annual recurring total').setFontWeight('bold');
+  sheet.getRange('J2').setFormula('=SUM(G2:G200)').setNumberFormat(CURRENCY);
 
   if (sheet.getRange(2, 1).getValue() === '') {
-    sheet.getRange(2, 1, 3, 5).setValues([
-      ['Rent', 'Housing', 1200, 1, true],
-      ['Electricity', 'Utilities', 60, 9, true],
-      ['Streaming', 'Entertainment', 15, 15, true]
+    sheet.getRange(2, 1, 4, 6).setValues([
+      ['Rent', 'Housing', 1200, 'Monthly', 1, true],
+      ['Streaming', 'Entertainment', 15, 'Monthly', 15, true],
+      ['Groceries', 'Groceries', 120, 'Weekly', '', true],
+      ['Car insurance', 'Transport', 130, 'Monthly split', '', true]
     ]);
   }
   sheet.setColumnWidth(1, 180);
-  sheet.setColumnWidth(8, 190);
+  sheet.setColumnWidth(9, 190);
 }
 
 // ---- 4. Goals (savings / earnings planning) ----------------------
@@ -310,15 +325,21 @@ function buildGoals_(ss) {
   sheet.getRange('B3').setFormula('=SUMIF(' + acct + '!B2:B,"Cash",' + acct + '!C2:C)')
     .setNumberFormat(CURRENCY);
   put_(sheet, 'A4', '🧾 Bills left this week', true);
-  // Recurring bills (Active, with a due day) whose due date falls between TODAY and the
-  // end of this week. Two DATE terms cover a week that straddles a month boundary; the
-  // ">0" collapses the duplicate when both land in the same month (no double count).
+  // Three kinds of recurring items (cols: C=Amount, D=Frequency, E=Due Day, F=Active):
+  //   Weekly        → full amount every week.
+  //   Monthly split → Amount * 12/52 reserved each week.
+  //   Monthly       → full amount only in the week its Due Day falls (between today and
+  //                   the end of this week). Two DATE terms cover a month-boundary week;
+  //                   ">0" collapses the duplicate so it isn't counted twice.
+  var due =
+    '(((DATE(YEAR(TODAY()),MONTH(TODAY()),' + rec + '!E2:E200)>=TODAY())' +
+    '*(DATE(YEAR(TODAY()),MONTH(TODAY()),' + rec + '!E2:E200)<=$L$2))' +
+    '+((DATE(YEAR($L$2),MONTH($L$2),' + rec + '!E2:E200)>=TODAY())' +
+    '*(DATE(YEAR($L$2),MONTH($L$2),' + rec + '!E2:E200)<=$L$2))>0)';
   sheet.getRange('B4').setFormula(
-    '=SUMPRODUCT((' + rec + '!E2:E60=TRUE),N(' + rec + '!C2:C60),(N(' + rec + '!D2:D60)>=1),' +
-    '--(((DATE(YEAR(TODAY()),MONTH(TODAY()),' + rec + '!D2:D60)>=TODAY())' +
-    '*(DATE(YEAR(TODAY()),MONTH(TODAY()),' + rec + '!D2:D60)<=$L$2))' +
-    '+((DATE(YEAR($L$2),MONTH($L$2),' + rec + '!D2:D60)>=TODAY())' +
-    '*(DATE(YEAR($L$2),MONTH($L$2),' + rec + '!D2:D60)<=$L$2))>0))'
+    '=SUMPRODUCT((' + rec + '!F2:F200=TRUE)*(' + rec + '!D2:D200="Weekly")*N(' + rec + '!C2:C200))' +
+    '+SUMPRODUCT((' + rec + '!F2:F200=TRUE)*(' + rec + '!D2:D200="Monthly split")*N(' + rec + '!C2:C200))*(12/52)' +
+    '+SUMPRODUCT((' + rec + '!F2:F200=TRUE)*(' + rec + '!D2:D200="Monthly")*N(' + rec + '!C2:C200)*(N(' + rec + '!E2:E200)>=1)*--' + due + ')'
   ).setNumberFormat(CURRENCY);
   put_(sheet, 'A5', '✅ Safe to spend', true);
   sheet.getRange('B5').setFormula('=B3-B4').setNumberFormat(CURRENCY)
@@ -326,9 +347,10 @@ function buildGoals_(ss) {
   sheet.getRange('A5:B5').setBackground('#d9ead3');
   sheet.getRange('A3').setNote('Sum of your Cash-type account balances (from Account Summary). ' +
     'Credit-card debt is not counted — this is spendable cash only.');
-  sheet.getRange('A4').setNote('Recurring bills (Active) whose due day is between today and the ' +
-    'end of this week. Bills already past this week are assumed paid, so they are excluded — ' +
-    'they are already reflected in your cash on hand.');
+  sheet.getRange('A4').setNote('From the Recurring tab (Active items): Weekly items count in ' +
+    'full every week; "Monthly split" items count their weekly share (amount ÷ 4.33); Monthly ' +
+    'items count in full only in the week their Due Day falls. Monthly bills already past this ' +
+    'week are excluded (assumed paid, already reflected in cash on hand).');
   sheet.getRange('A5').setNote('Cash on hand minus the bills still due this week = what you can ' +
     'safely spend for the rest of the week without missing a bill.');
 
@@ -387,8 +409,11 @@ function buildDashboard_(ss, cats) {
   put_(sheet, 'A5', 'Net', true);
   sheet.getRange('B5').setFormula('=B3-B4').setNumberFormat(CURRENCY);
   put_(sheet, 'A6', 'Monthly recurring', true);
+  // Monthly-equivalent of active recurring items (Weekly counted as Amount*52/12).
   sheet.getRange('B6')
-    .setFormula("=SUMIF('" + SHEETS.RECUR + "'!E2:E,TRUE,'" + SHEETS.RECUR + "'!C2:C)")
+    .setFormula("=SUMPRODUCT(('" + SHEETS.RECUR + "'!F2:F200=TRUE),N('" + SHEETS.RECUR +
+      "'!C2:C200),(('" + SHEETS.RECUR + "'!D2:D200=\"Weekly\")*(52/12)+('" + SHEETS.RECUR +
+      "'!D2:D200<>\"Weekly\")))")
     .setNumberFormat(CURRENCY);
 
   // --- Standing balances by account group (from Account Summary) ---
