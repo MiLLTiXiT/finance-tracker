@@ -257,6 +257,24 @@ function buildAccounts_(ss) {
 //                    reserved each week, so nothing lands as a big one-week hit).
 function buildRecurring_(ss, cats) {
   var sheet = getOrCreate_(ss, SHEETS.RECUR);
+  // One-time migration: the old layout had Due Day in col D and Active in col E. We now
+  // insert Frequency at D (shifting Due Day→E, Active→F). If the existing header is the
+  // old shape, shift each row's data right and default existing bills to "Monthly" so
+  // nothing the user typed gets scrambled or lost.
+  if (sheet.getLastColumn() >= 5) {
+    var h = sheet.getRange(1, 1, 1, 6).getValues()[0].map(function (x) { return String(x).trim(); });
+    if (h[3] === 'Due Day' && h[4] === 'Active') {
+      var lr = sheet.getLastRow();
+      if (lr >= 2) {
+        var old = sheet.getRange(2, 1, lr - 1, 5).getValues();   // A..E: Name,Cat,Amount,DueDay,Active
+        var mig = old.map(function (row) {
+          if (String(row[0]).trim() === '') return ['', '', '', '', '', '', ''];
+          return [row[0], row[1], row[2], 'Monthly', row[3], row[4], ''];  // insert Frequency=Monthly
+        });
+        sheet.getRange(2, 1, mig.length, 7).setValues(mig);
+      }
+    }
+  }
   header_(sheet, ['Name', 'Category', 'Amount', 'Frequency', 'Due Day', 'Active', 'Annual']);
 
   // Annual projection (col G): Weekly = Amount*52; Monthly/Monthly split = Amount*12.
