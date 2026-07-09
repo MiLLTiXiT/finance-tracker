@@ -286,57 +286,87 @@ function buildRecurring_(ss, cats) {
 }
 
 // ---- 4. Goals (savings / earnings planning) ----------------------
+// Two sections on one tab:
+//   TOP  — Weekly Budget: current Cash on hand − recurring bills still due this week
+//          = "Safe to spend" this week (the primary, most-used number).
+//   BELOW — Savings Goals (target/saved/on-track).
 function buildGoals_(ss) {
   var sheet = getOrCreate_(ss, SHEETS.GOALS);
-  header_(sheet, [
-    'Goal', 'Target Amount', 'Target Date', 'Saved So Far',
-    'Monthly Contribution', 'Remaining', '% Complete',
-    'Months Left', 'On Track?'
-  ]);
+  var acct = "'" + SHEETS.ACCT + "'";
+  var rec = "'" + SHEETS.RECUR + "'";
 
-  for (var r = 2; r <= 100; r++) {
-    // Remaining = Target - Saved
-    var rem = '=IF(B' + r + '="","",MAX(0,B' + r + '-D' + r + '))';
-    // % complete = Saved / Target
-    var pct = '=IF(B' + r + '="","",IF(B' + r + '=0,0,MIN(1,D' + r + '/B' + r + ')))';
-    // Months left until target date (from today)
-    var months = '=IF(C' + r + '="","",DATEDIF(TODAY(),C' + r + ',"M"))';
-    // On track? remaining can be covered by monthlyContribution * monthsLeft
-    var onTrack = '=IF(OR(B' + r + '="",C' + r + '="",E' + r +
-      '=""),"",IF(E' + r + '*H' + r + '>=F' + r + ',"Yes","No"))';
-    sheet.getRange(r, 6).setFormula(rem);
-    sheet.getRange(r, 7).setFormula(pct);
-    sheet.getRange(r, 8).setFormula(months);
-    sheet.getRange(r, 9).setFormula(onTrack);
+  // --- Week bounds (Sunday..Saturday containing today), off to the side in K/L ---
+  put_(sheet, 'K1', 'Week start');
+  sheet.getRange('L1').setFormula('=TODAY()-WEEKDAY(TODAY())+1').setNumberFormat('yyyy-mm-dd');
+  put_(sheet, 'K2', 'Week end');
+  sheet.getRange('L2').setFormula('=L1+6').setNumberFormat('yyyy-mm-dd');
+
+  // --- Weekly Budget block (A1:B5) ---
+  sheet.getRange('A1').setValue('📅 WEEKLY BUDGET (this week)')
+    .setFontSize(14).setFontWeight('bold');
+  put_(sheet, 'A2', 'Week of', true);
+  sheet.getRange('B2').setFormula('=TEXT(L1,"ddd mmm d")&" – "&TEXT(L2,"mmm d")');
+  put_(sheet, 'A3', '💵 Cash on hand', true);
+  sheet.getRange('B3').setFormula('=SUMIF(' + acct + '!B2:B,"Cash",' + acct + '!C2:C)')
+    .setNumberFormat(CURRENCY);
+  put_(sheet, 'A4', '🧾 Bills left this week', true);
+  // Recurring bills (Active, with a due day) whose due date falls between TODAY and the
+  // end of this week. Two DATE terms cover a week that straddles a month boundary; the
+  // ">0" collapses the duplicate when both land in the same month (no double count).
+  sheet.getRange('B4').setFormula(
+    '=SUMPRODUCT((' + rec + '!E2:E60=TRUE),N(' + rec + '!C2:C60),(N(' + rec + '!D2:D60)>=1),' +
+    '--(((DATE(YEAR(TODAY()),MONTH(TODAY()),' + rec + '!D2:D60)>=TODAY())' +
+    '*(DATE(YEAR(TODAY()),MONTH(TODAY()),' + rec + '!D2:D60)<=$L$2))' +
+    '+((DATE(YEAR($L$2),MONTH($L$2),' + rec + '!D2:D60)>=TODAY())' +
+    '*(DATE(YEAR($L$2),MONTH($L$2),' + rec + '!D2:D60)<=$L$2))>0))'
+  ).setNumberFormat(CURRENCY);
+  put_(sheet, 'A5', '✅ Safe to spend', true);
+  sheet.getRange('B5').setFormula('=B3-B4').setNumberFormat(CURRENCY)
+    .setFontWeight('bold').setFontSize(12);
+  sheet.getRange('A5:B5').setBackground('#d9ead3');
+  sheet.getRange('A3').setNote('Sum of your Cash-type account balances (from Account Summary). ' +
+    'Credit-card debt is not counted — this is spendable cash only.');
+  sheet.getRange('A4').setNote('Recurring bills (Active) whose due day is between today and the ' +
+    'end of this week. Bills already past this week are assumed paid, so they are excluded — ' +
+    'they are already reflected in your cash on hand.');
+  sheet.getRange('A5').setNote('Cash on hand minus the bills still due this week = what you can ' +
+    'safely spend for the rest of the week without missing a bill.');
+
+  // --- Savings Goals block (below, header on row 8) ---
+  var H = 8;
+  sheet.getRange(H - 1, 1).setValue('🎯 SAVINGS GOALS').setFontSize(14).setFontWeight('bold');
+  var hdr = ['Goal', 'Target Amount', 'Target Date', 'Saved So Far',
+             'Monthly Contribution', 'Remaining', '% Complete', 'Months Left', 'On Track?'];
+  sheet.getRange(H, 1, 1, hdr.length).setValues([hdr])
+    .setFontWeight('bold').setBackground('#1f3864').setFontColor('#ffffff');
+  var last = H + 99;
+  for (var r = H + 1; r <= last; r++) {
+    sheet.getRange(r, 6).setFormula('=IF(B' + r + '="","",MAX(0,B' + r + '-D' + r + '))');
+    sheet.getRange(r, 7).setFormula('=IF(B' + r + '="","",IF(B' + r + '=0,0,MIN(1,D' + r + '/B' + r + ')))');
+    sheet.getRange(r, 8).setFormula('=IF(C' + r + '="","",DATEDIF(TODAY(),C' + r + ',"M"))');
+    sheet.getRange(r, 9).setFormula('=IF(OR(B' + r + '="",C' + r + '="",E' + r +
+      '=""),"",IF(E' + r + '*H' + r + '>=F' + r + ',"Yes","No"))');
   }
+  sheet.getRange(H + 1, 2, 99, 1).setNumberFormat(CURRENCY);
+  sheet.getRange(H + 1, 3, 99, 1).setNumberFormat('yyyy-mm-dd');
+  sheet.getRange(H + 1, 4, 99, 3).setNumberFormat(CURRENCY);
+  sheet.getRange(H + 1, 7, 99, 1).setNumberFormat('0%');
 
-  sheet.getRange('B2:B').setNumberFormat(CURRENCY);
-  sheet.getRange('C2:C').setNumberFormat('yyyy-mm-dd');
-  sheet.getRange('D2:F').setNumberFormat(CURRENCY);
-  sheet.getRange('G2:G').setNumberFormat('0%');
-
-  // Highlight off-track goals.
-  var rules = sheet.getConditionalFormatRules();
+  // Highlight off-track goals (rebuilt fresh so re-running doesn't stack rules).
+  var onTrackRng = sheet.getRange(H + 1, 9, 99, 1);
+  var rules = [];
   rules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('No')
-    .setBackground('#f4cccc')
-    .setRanges([sheet.getRange('I2:I')])
-    .build());
+    .whenTextEqualTo('No').setBackground('#f4cccc').setRanges([onTrackRng]).build());
   rules.push(SpreadsheetApp.newConditionalFormatRule()
-    .whenTextEqualTo('Yes')
-    .setBackground('#d9ead3')
-    .setRanges([sheet.getRange('I2:I')])
-    .build());
+    .whenTextEqualTo('Yes').setBackground('#d9ead3').setRanges([onTrackRng]).build());
   sheet.setConditionalFormatRules(rules);
 
-  if (sheet.getRange(2, 1).getValue() === '') {
+  if (sheet.getRange(H + 1, 1).getValue() === '') {
     var inSixMonths = new Date();
     inSixMonths.setMonth(inSixMonths.getMonth() + 6);
-    sheet.getRange(2, 1, 1, 5).setValues([
-      ['Vacation', 3000, inSixMonths, 600, 400]
-    ]);
+    sheet.getRange(H + 1, 1, 1, 5).setValues([['Vacation', 3000, inSixMonths, 600, 400]]);
   }
-  sheet.setColumnWidth(1, 160);
+  sheet.setColumnWidth(1, 200);
 }
 
 // ---- 5. Dashboard (weekly + monthly summaries) -------------------
