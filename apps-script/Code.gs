@@ -328,6 +328,12 @@ function buildGoals_(ss) {
   var acct = "'" + SHEETS.ACCT + "'";
   var rec = "'" + SHEETS.RECUR + "'";
 
+  // Clear stale content in the top band (rows 1-8, cols C-J). Earlier versions put the
+  // goal formulas (Remaining/%/etc.) in F2:I100; with goals now starting at row 9, those
+  // old formulas would sit next to the Weekly Budget and throw #VALUE! (B2 is date text).
+  // The Weekly Budget lives in A:B and the week helpers in K:L, so C1:J8 is safe to wipe.
+  sheet.getRange('C1:J8').clearContent();
+
   // --- Week bounds (Sunday..Saturday containing today), off to the side in K/L ---
   put_(sheet, 'K1', 'Week start');
   sheet.getRange('L1').setFormula('=TODAY()-WEEKDAY(TODAY())+1').setNumberFormat('yyyy-mm-dd');
